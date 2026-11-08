@@ -499,29 +499,71 @@ func TestJobReconcileUpdate(t *testing.T) {
 	})
 }
 
-// TestJobReconcileUpdateWhileClearDestinationRuns checks that an update rejected because a clear-destination is running
-// is a wait, not a failure: Pending, requeued, no indicator, entity ID kept.
-// When the clear ends, the next reconcile diffs again and applies the update.
-func TestJobReconcileUpdateWhileClearDestinationRuns(t *testing.T) {
-	e, job := newSyncedJobTestEnv(t, nil)
-	e.setData(streamsConfigMap, streamsManifestData(jobConfigMap, ordersSelection))
-	e.etl.failingMethods["UpdateJob"] = fmt.Errorf("%w: job %d", constants.ErrClearDestinationRunning, job.ID)
+// Overlapping catalog work is a wait, not a permanent failure for this input hash.
+// Once the conflict ends, the next reconcile reloads, diffs, and applies the edit.
+func TestJobReconcileUpdateWaitsForCatalogWork(t *testing.T) {
+	for _, conflict := range []error{constants.ErrClearDestinationRunning, constants.ErrCatalogRevision, constants.ErrJobBusy} {
+		t.Run(conflict.Error(), func(t *testing.T) {
+			e, job := newSyncedJobTestEnv(t, nil)
+			e.setData(streamsConfigMap, streamsManifestData(jobConfigMap, ordersSelection))
+			e.etl.failingMethods["UpdateJob"] = fmt.Errorf("%w: job %d", conflict, job.ID)
 
-	result := e.reconcileJob(jobConfigMap)
-	assert.Equal(t, syncRequeueAfter, result.RequeueAfter)
-	assert.Equal(t, PhasePending, e.phaseOf(jobConfigMap), "a running clear-destination is a wait, never a failure")
-	assert.Contains(t, e.messageOf(jobConfigMap), constants.ErrClearDestinationRunning.Error())
-	assert.Equal(t, idString(job.ID), e.annotationsOf(jobConfigMap)[AnnotationEntityID])
-	assert.Empty(t, e.status.indicatorActions)
+			result := e.reconcileJob(jobConfigMap)
+			assert.Equal(t, syncRequeueAfter, result.RequeueAfter)
+			assert.Equal(t, PhasePending, e.phaseOf(jobConfigMap))
+			assert.Contains(t, e.messageOf(jobConfigMap), conflict.Error())
+			assert.Equal(t, idString(job.ID), e.annotationsOf(jobConfigMap)[AnnotationEntityID])
+			assert.Empty(t, e.status.indicatorActions)
 
-	// the clear ends: the requeue diffs again and applies the edit
-	delete(e.etl.failingMethods, "UpdateJob")
-	e.resetRecordings()
-	e.reconcileJob(jobConfigMap)
-	assert.Equal(t, 1, e.etl.callCount("GetStreamDifference"))
-	assert.Equal(t, []string{"UpdateJob"}, e.etl.writeCalls())
-	assert.Equal(t, PhaseReady, e.phaseOf(jobConfigMap))
-	assert.Equal(t, PhaseReady, e.phaseOf(streamsConfigMap))
+			delete(e.etl.failingMethods, "UpdateJob")
+			e.resetRecordings()
+			e.reconcileJob(jobConfigMap)
+			assert.Equal(t, 1, e.etl.callCount("GetStreamDifference"))
+			assert.Equal(t, []string{"UpdateJob"}, e.etl.writeCalls())
+			assert.Equal(t, PhaseReady, e.phaseOf(jobConfigMap))
+			assert.Equal(t, PhaseReady, e.phaseOf(streamsConfigMap))
+		})
+	}
+}
+
+func TestJobReconcileEnrollmentUpdateUsesSavedCatalogRevision(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		saved, submitted bool
+	}{
+		{name: "enable", submitted: true},
+		{name: "keep enabled", saved: true, submitted: true},
+		{name: "disable", saved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, job := newSyncedJobTestEnv(t, nil)
+			job.AdvancedSettings = utils.StringPtr(fmt.Sprintf(`{"auto_table_enrollment":{"enabled":%t}}`, tc.saved))
+			job.SelectedStreamsConfig = utils.StringPtr(`{"selected_streams":{"public":[{"stream_name":"orders"},{"stream_name":"automatically_added"}]}}`)
+			selectedBefore := *job.SelectedStreamsConfig
+			revision, err := job.CatalogRevision()
+			require.NoError(t, err)
+			e.setData(jobConfigMap, manifestData(jobConfigJSON(map[string]interface{}{
+				"frequency": "*/5 * * * *",
+				"advanced_settings": map[string]interface{}{
+					"auto_table_enrollment": map[string]interface{}{"enabled": tc.submitted},
+				},
+			})))
+			// Model the service's revision precondition: without it the job remains
+			// Pending and its desired frequency never applies.
+			e.etl.failCall = func(method string) error {
+				if method == "UpdateJob" && updateJobRequests(e.etl)[0].CatalogRevision != revision {
+					return constants.ErrCatalogRevision
+				}
+				return nil
+			}
+
+			e.reconcileJob(jobConfigMap)
+			assert.Equal(t, PhaseReady, e.phaseOf(jobConfigMap))
+			assert.Equal(t, "*/5 * * * *", job.Frequency)
+			assert.Equal(t, selectedBefore, *job.SelectedStreamsConfig, "a metadata update must keep enrolled tables")
+			assert.Zero(t, e.etl.callCount("DiscoverWithCatalog"))
+		})
+	}
 }
 
 // TestJobReconcileUpdateErrors covers failures on the update path:

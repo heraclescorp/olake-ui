@@ -169,9 +169,23 @@ func (r *Job) Reconcile(ctx context.Context, res, streamsRes *ResourceData) (ctr
 			}
 		}
 		req := jobCfg.updateRequest(source.ID, source.Version, dest.ID, existingJob.Active, catalog, diffStreams)
+		savedEnrollmentEnabled, err := existingJob.AutoTableEnrollmentEnabled()
+		if err != nil {
+			return r.failJob(ctx, res, streamsRes, NonRetryableError(err), observed)
+		}
+		submittedEnrollmentEnabled := req.AdvancedSettings != nil && req.AdvancedSettings.AutoTableEnrollment != nil && req.AdvancedSettings.AutoTableEnrollment.Enabled
+		if savedEnrollmentEnabled || submittedEnrollmentEnabled {
+			// Use the pre-discovery snapshot, not a freshly fetched revision that
+			// could authorize overwriting tables enrolled during discovery.
+			req.CatalogRevision, err = existingJob.CatalogRevision()
+			if err != nil {
+				return r.failJob(ctx, res, streamsRes, NonRetryableError(err), observed)
+			}
+		}
 		if err := r.ETL.UpdateJob(ctx, req, projectID, existingJob.ID, &userID); err != nil {
-			// clear-destination ends on its own; retry the update after it instead of failing for this hash
-			if errors.Is(err, constants.ErrClearDestinationRunning) {
+			// Retry from a fresh snapshot after an overlapping edit, enrollment,
+			// or clear-destination rather than failing permanently for this hash.
+			if errors.Is(err, constants.ErrClearDestinationRunning) || errors.Is(err, constants.ErrCatalogRevision) || errors.Is(err, constants.ErrJobBusy) {
 				return waitResource(ctx, r.Sink, res, err.Error(), observed)
 			}
 			logger.Error(err, "update job failed")

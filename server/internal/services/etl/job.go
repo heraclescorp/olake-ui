@@ -99,6 +99,15 @@ func (s Service) CreateJob(ctx context.Context, req *dto.CreateJobRequest, proje
 	if err := validateStreamsFormat(req.StreamsConfig, req.AvailableStreamsConfig, req.SelectedStreamsConfig, req.Source.Version, nil); err != nil {
 		return err
 	}
+	if enrollmentEnabled(req.AdvancedSettings) {
+		sourceType, destinationType, err := s.enrollmentDriverTypes(req.Source, req.Destination, projectID)
+		if err != nil {
+			return err
+		}
+		if err := validateEnrollmentPolicy(req.AdvancedSettings, sourceType, destinationType, types.StreamsCatalog{Streams: req.StreamsConfig, Available: req.AvailableStreamsConfig, Selected: req.SelectedStreamsConfig}); err != nil {
+			return err
+		}
+	}
 
 	unique, err := s.db.IsJobNameUniqueInProject(ctx, projectID, req.Name)
 	if err != nil {
@@ -170,13 +179,41 @@ func (s Service) CreateJob(ctx context.Context, req *dto.CreateJobRequest, proje
 }
 
 func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, projectID string, jobID int, userID *int) error {
-	// TODO: remove fetching existing job from database to verify it's existence, fetch only if the details aren't already available in the params/request. If job not exists it will fail during query execution.
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// Read the saved catalog, never a client-derived selection, for approval checks.
 	existingJob, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
 			return fmt.Errorf("%w: %v", constants.ErrJobNotFound, err)
 		}
 		return fmt.Errorf("failed to get job: %s", err)
+	}
+	if existingJob.ProjectID != projectID {
+		return constants.ErrJobNotFound
+	}
+	existingEnabled, err := existingJob.AutoTableEnrollmentEnabled()
+	if err != nil {
+		return err
+	}
+	revisionRequired := existingEnabled || enrollmentEnabled(req.AdvancedSettings)
+	if err := s.db.CheckCatalogRevision(ctx, jobID, projectID, req.CatalogRevision, revisionRequired); err != nil {
+		return err
+	}
+	if enrollmentEnabled(req.AdvancedSettings) {
+		sourceType, destinationType, err := s.enrollmentDriverTypes(req.Source, req.Destination, projectID)
+		if err != nil {
+			return err
+		}
+		if err := validateEnrollmentPolicy(req.AdvancedSettings, sourceType, destinationType, existingJob.StreamsCatalog()); err != nil {
+			return err
+		}
+		if err := validateEnrollmentPolicy(req.AdvancedSettings, sourceType, destinationType, types.StreamsCatalog{Streams: req.StreamsConfig, Available: req.AvailableStreamsConfig, Selected: req.SelectedStreamsConfig}); err != nil {
+			return err
+		}
 	}
 
 	if err := validateStreamsFormat(req.StreamsConfig, req.AvailableStreamsConfig, req.SelectedStreamsConfig, req.Source.Version, existingJob); err != nil {
@@ -243,8 +280,8 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 		updateParams["advanced_settings"] = nil
 	}
 
-	if err := s.db.UpdateJob(existingJob.ID, updateParams); err != nil {
-		return fmt.Errorf("failed to update job: %s", err)
+	if err := s.db.UpdateJobWithCatalogRevision(ctx, existingJob.ID, projectID, req.CatalogRevision, revisionRequired, updateParams); err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
 	}
 
 	// TODO: check compensation/outbox pattern or any relevant measures to handle failure of update schedule workflow
@@ -586,6 +623,11 @@ func (s Service) buildJobResponse(job *models.Job, lastRun *JobLastRunInfo, incl
 		jobResp.StreamsConfig = utils.StringValue(job.StreamsConfig)
 		jobResp.AvailableStreamsConfig = utils.StringValue(job.AvailableStreamsConfig)
 		jobResp.SelectedStreamsConfig = utils.StringValue(job.SelectedStreamsConfig)
+		revision, err := job.CatalogRevision()
+		if err != nil {
+			return dto.JobResponse{}, fmt.Errorf("failed to build catalog_revision for job %d: %w", job.ID, err)
+		}
+		jobResp.CatalogRevision = revision
 	}
 
 	if job.Source != nil {
