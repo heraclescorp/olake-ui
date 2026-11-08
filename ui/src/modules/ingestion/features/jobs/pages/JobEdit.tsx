@@ -111,12 +111,16 @@ const JobEdit: React.FC = () => {
 	} = useJobConfigurationStore()
 
 	const initialStreamsData = useRef<SelectedStreams | null>(null)
+	// Keep the token paired with the catalog used to initialize this editor.
+	// A later query refresh must not authorize an older in-progress selection.
+	const originalCatalogRevision = useRef<string>()
 
 	const normalizedSourceConnector = sourceSnapshot
 		? getConnectorInLowerCase(sourceSnapshot.type)
 		: ""
 
 	const initializeFromExistingJob = (job: Job) => {
+		originalCatalogRevision.current = job.catalog_revision
 		setJobName(job.name)
 
 		// Resolve source snapshot
@@ -298,6 +302,7 @@ const JobEdit: React.FC = () => {
 		...getCatalogPayload(streamsConfig),
 		frequency: cronExpression,
 		activate: job?.activate,
+		catalog_revision: originalCatalogRevision.current,
 		...(diff && { difference_streams: JSON.stringify(diff) }),
 		advanced_settings: streamsConfig
 			? withIndexRequired(advancedSettings, streamsConfig)

@@ -11,10 +11,13 @@ var (
 	ErrPasswordProcessing = errors.New("failed to process password")
 
 	// Source related errors
-	ErrSourceNotFound      = errors.New("source not found")
-	ErrDestinationNotFound = errors.New("destination not found")
-	ErrJobNotFound         = errors.New("job not found")
-	ErrConfigDecrypt       = errors.New("failed to decrypt config")
+	ErrSourceNotFound          = errors.New("source not found")
+	ErrDestinationNotFound     = errors.New("destination not found")
+	ErrJobNotFound             = errors.New("job not found")
+	ErrConfigDecrypt           = errors.New("failed to decrypt config")
+	ErrInvalidEnrollmentPolicy = errors.New("invalid auto table enrollment policy")
+	ErrCatalogRevision         = errors.New("catalog changed; refresh the job before saving to preserve automatically enrolled tables")
+	ErrJobBusy                 = errors.New("job is busy or paused")
 
 	// ErrStreamsFormat rejects a catalog whose format does not fit the job or its driver
 	ErrStreamsFormat = errors.New("invalid streams format")
