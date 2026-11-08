@@ -103,6 +103,33 @@ type AdvancedSettings struct {
 	IndexRequired *bool `json:"index_required,omitempty" example:"true"`
 	// TargetQueryEngines are stored here because OLake keeps none; changing them needs the catalog regenerated.
 	TargetQueryEngines []string `json:"target_query_engines,omitempty" example:"spark,duckdb"`
+	// AutoTableEnrollment opts PostgreSQL -> Iceberg jobs into enrollment of new
+	// tables in explicitly approved existing schemas; off/missing keeps old behavior.
+	AutoTableEnrollment *AutoTableEnrollmentPolicy `json:"auto_table_enrollment,omitempty"`
+}
+
+// AutoTableEnrollmentPolicy approves only existing source namespaces. Pointer
+// booleans distinguish explicit false defaults from omitted settings.
+type AutoTableEnrollmentPolicy struct {
+	Enabled  bool                         `json:"enabled"`
+	Schemas  []AutoTableEnrollmentSchema  `json:"schemas,omitempty"`
+	Defaults *AutoTableEnrollmentDefaults `json:"defaults,omitempty"`
+}
+
+type AutoTableEnrollmentSchema struct {
+	// Namespace must be unique, nonblank and present in the saved available catalog.
+	Namespace string `json:"namespace"`
+	// DestinationDatabase is an explicit mapping, never inferred from another table.
+	DestinationDatabase string `json:"destination_database"`
+}
+
+// AutoTableEnrollmentDefaults requires all fields when enabled, including explicit
+// false booleans. Upsert delete types must support all target_query_engines.
+type AutoTableEnrollmentDefaults struct {
+	Normalization  *bool  `json:"normalization"`
+	AppendMode     *bool  `json:"append_mode"`
+	UpdateType     string `json:"update_type" enums:"eq,pos,dv"`
+	SyncNewColumns *bool  `json:"sync_new_columns"`
 }
 
 type JobMetadata struct {
@@ -129,6 +156,10 @@ type UpdateJobRequest struct {
 	AvailableStreamsConfig string        `json:"available_streams_config,omitempty" orm:"type(jsonb)"`
 	SelectedStreamsConfig  string        `json:"selected_streams_config,omitempty" orm:"type(jsonb)"`
 	DifferenceStreams      string        `json:"difference_streams,omitempty" example:"[]"`
+	// CatalogRevision is required when the saved or submitted enrollment policy
+	// is enabled. Missing/stale tokens return 409; refresh the job before saving.
+	// Checked before cancellation and again under the final database write lock.
+	CatalogRevision string `json:"catalog_revision,omitempty"`
 }
 
 // StreamDifferenceRequest carries the edited catalog in one format: updated_streams_config, or

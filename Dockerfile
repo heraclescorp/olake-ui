@@ -31,7 +31,7 @@ RUN npm install -g pnpm@11.24.0
 # Copy package files
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
 # Install dependencies
-RUN pnpm install
+RUN pnpm install --frozen-lockfile
 
 # Copy the rest of the UI code
 COPY ui/ ./
