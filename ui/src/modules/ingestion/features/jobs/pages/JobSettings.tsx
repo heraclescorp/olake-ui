@@ -17,6 +17,7 @@ import {
 	StreamEditDisabledModal,
 	AdvancedSettingsCard,
 } from "../components"
+import ResyncTableCard from "../components/ResyncTableCard"
 import { DAYS, FREQUENCY_OPTIONS } from "../constants"
 import {
 	useClearDestinationStatus,
@@ -74,8 +75,11 @@ const JobSettings: React.FC = () => {
 		staleTime: Infinity,
 		refetchOnMount: "always",
 	})
-	const { data: clearDestStatus, isLoading: isClearDestinationStatusLoading } =
-		useClearDestinationStatus(jobId ? parseInt(jobId) : -1)
+	const {
+		data: clearDestStatus,
+		isLoading: isClearDestinationStatusLoading,
+		isError: isClearDestinationStatusError,
+	} = useClearDestinationStatus(jobId ? parseInt(jobId) : -1)
 	const selectedClearDestinationRunning = clearDestStatus?.running ?? false
 	const { mutateAsync: updateJobMutation } = useUpdateJob()
 
@@ -286,6 +290,25 @@ const JobSettings: React.FC = () => {
 		}
 	}
 
+	const hasUnsavedSettings =
+		!!job &&
+		(jobName !== job.name ||
+			cronExpression !== job.frequency ||
+			JSON.stringify(advancedSettings ?? null) !==
+				JSON.stringify(job.advanced_settings ?? null))
+	const resyncDisabledReason = !job
+		? "Job details are unavailable."
+		: isClearDestinationStatusError
+			? "Unable to check whether a destination clear is running. Try again when status is available."
+			: selectedClearDestinationRunning ||
+				  job.last_run_state?.toLowerCase() === "running"
+				? "Wait for the running sync or destination clear to finish before resyncing a table."
+				: !job.activate
+					? "Resume this paused job before resyncing a table."
+					: hasUnsavedSettings
+						? "Save or discard unsaved settings before resyncing a table. Only saved configuration is used."
+						: undefined
+
 	if (isJobLoading || isClearDestinationStatusLoading) {
 		return (
 			<div className="flex h-screen w-full items-center justify-center">
@@ -460,6 +483,12 @@ const JobSettings: React.FC = () => {
 									queryEnginesDisabled
 								/>
 							</div>
+							{job && (
+								<ResyncTableCard
+									job={job}
+									disabledReason={resyncDisabledReason}
+								/>
+							)}
 							<div className="mb-6 rounded-xl border border-gray-200 bg-white px-6 pb-2">
 								<div className="border-gray-200 pt-4">
 									<div className="mb-2 flex items-center justify-between">

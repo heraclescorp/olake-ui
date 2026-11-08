@@ -1063,6 +1063,52 @@ POST, before any operation starts.
   }
   ```
 
+### Resync One Selected Table
+---
+
+- **Endpoint**: `/api/v1/project/:projectid/jobs/:id/resync-table`
+- **Method**: POST
+- **Authentication**: existing authenticated `olake-session` cookie (same as the UI).
+- **Request Body** (only these fields are accepted):
+
+  ```json
+  {
+    "namespace": "public",
+    "stream_name": "orders"
+  }
+  ```
+
+- **Description**: Clears and resets exactly one currently selected table using the job's saved
+  catalog, including its destination overrides and source version. Both fields must be nonempty;
+  namespace and table name are matched exactly. No catalog or column-only reset is accepted.
+  Historical data for selected columns requires resyncing the entire table.
+  The job must be active, with neither sync nor clear-destination running. The selected table must
+  use a backfill-capable mode (`cdc`, `full_refresh`, or `incremental`), not `strict_cdc` (CDC only).
+  Legacy and split catalogs are supported. The saved job configuration, other table state, and
+  global CDC/LSN position are preserved; the entire job state is never reset by this operation.
+  After the scoped clear and updated state are successfully persisted, the worker durably triggers
+  a normal full-job sync: the reset table backfills and other streams follow their saved modes and
+  checkpoints; other unfinished backfills or full-refresh streams may also run before CDC catch-up.
+- **Response**: `200` means the asynchronous resync was accepted, not that it has completed.
+  Uses the normal JSONResponse message with no additional data shape:
+
+  ```json
+  {
+    "success": true,
+    "message": "table resync triggered successfully for job_id[1]"
+  }
+  ```
+
+- **Errors**: `400` for malformed/extra fields, missing or empty identifiers, unknown or unselected
+  tables, or a mode without backfill; `401` for unauthenticated requests; `404` for a missing job or
+  a job outside the requested project; `409` for paused jobs or running sync/clear operations;
+  `500` for storage or workflow failures. Poll the existing clear-destination status and job tasks.
+- **Worker contract**: only this operation sets `start_sync_after_clear: true` on the existing
+  clear-destination execution request. Ordinary clears set it to `false` and do not trigger an
+  immediate follow-up sync. Resync cleanup keeps scheduling paused until a successful, idempotent
+  unpause-and-trigger handoff. Failed or cancelled clears do not enqueue that handoff and leave the
+  schedule paused for operator review/retry.
+
 ### Get Clear Destination Status
 ---
 

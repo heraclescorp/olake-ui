@@ -197,7 +197,7 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 			return fmt.Errorf("invalid difference_streams JSON: %s", err)
 		}
 		if len(diffCatalog) > 0 {
-			if err := s.ClearDestination(ctx, projectID, jobID, differenceCatalog(req), constants.DefaultCancelSyncWaitTime, false); err != nil {
+			if err := s.ClearDestination(ctx, projectID, jobID, differenceCatalog(req), constants.DefaultCancelSyncWaitTime, false, false); err != nil {
 				return fmt.Errorf("failed to run clear destination workflow: %s", err)
 			}
 			logger.Infof("successfully triggered clear destination workflow for job %d", existingJob.ID)
@@ -352,10 +352,13 @@ func differenceCatalog(req *dto.UpdateJobRequest) types.StreamsCatalog {
 }
 
 // ClearDestination clears the streams in diff, or every selected stream of the job when diff is empty.
-func (s Service) ClearDestination(ctx context.Context, projectID string, jobID int, diff types.StreamsCatalog, syncWaitTime time.Duration, resetState bool) error {
+func (s Service) ClearDestination(ctx context.Context, projectID string, jobID int, diff types.StreamsCatalog, syncWaitTime time.Duration, resetState, startSyncAfterClear bool) error {
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
-		return fmt.Errorf("job not found: %s", err)
+		return fmt.Errorf("failed to get job: %w", err)
+	}
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
 	}
 
 	if job.Source == nil {
@@ -366,7 +369,14 @@ func (s Service) ClearDestination(ctx context.Context, projectID string, jobID i
 	}
 
 	if !job.Active {
-		return fmt.Errorf("job is paused, please unpause to run clear destination")
+		return fmt.Errorf("%w: please unpause to run clear destination", constants.ErrJobBusy)
+	}
+	clearRunning, _, err := isWorkflowRunning(ctx, s.temporal, projectID, jobID, temporal.ClearDestination)
+	if err != nil {
+		return fmt.Errorf("failed to check clear destination status: %w", err)
+	}
+	if clearRunning {
+		return fmt.Errorf("%w: clear destination is running", constants.ErrJobBusy)
 	}
 
 	// Pause the schedule to prevent a race condition where a new sync could start
@@ -381,7 +391,7 @@ func (s Service) ClearDestination(ctx context.Context, projectID string, jobID i
 		if rerr := s.temporal.ResumeSchedule(ctx, projectID, jobID); rerr != nil {
 			return fmt.Errorf("wait error: %s, resume error: %s", err, rerr)
 		}
-		return fmt.Errorf("failed to wait for sync to stop: %s", err)
+		return fmt.Errorf("failed to wait for sync to stop: %w", err)
 	}
 
 	// for manual clear-destination, update the state file to empty object
@@ -394,7 +404,7 @@ func (s Service) ClearDestination(ctx context.Context, projectID string, jobID i
 
 	logger.Infof("running clear destination workflow for job %d for the following streams:\n%s", job.ID, cmp.Or(diff.Streams, diff.Selected))
 
-	if err := s.temporal.ClearDestination(ctx, job, diff); err != nil {
+	if err := s.temporal.ClearDestination(ctx, job, diff, startSyncAfterClear); err != nil {
 		if rerr := s.temporal.ResumeSchedule(ctx, projectID, jobID); rerr != nil {
 			return fmt.Errorf("clear destination error: %s, resume error: %s", err, rerr)
 		}

@@ -236,7 +236,7 @@ func waitForSyncToStop(ctx context.Context, tempClient *temporal.Temporal, proje
 	}
 
 	if maxWaitTime <= 0 {
-		return fmt.Errorf("sync is in progress, please wait or cancel the sync")
+		return fmt.Errorf("%w: sync is in progress, please wait or cancel the sync", constants.ErrJobBusy)
 	}
 
 	timedCtx, cancel := context.WithTimeout(ctx, maxWaitTime)

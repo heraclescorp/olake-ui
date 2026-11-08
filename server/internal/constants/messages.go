@@ -14,6 +14,8 @@ var (
 	ErrSourceNotFound      = errors.New("source not found")
 	ErrDestinationNotFound = errors.New("destination not found")
 	ErrJobNotFound         = errors.New("job not found")
+	ErrInvalidResync       = errors.New("invalid table resync")
+	ErrJobBusy             = errors.New("job is busy or paused")
 	ErrConfigDecrypt       = errors.New("failed to decrypt config")
 
 	// ErrStreamsFormat rejects a catalog whose format does not fit the job or its driver

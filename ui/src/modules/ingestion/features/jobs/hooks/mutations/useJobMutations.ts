@@ -1,8 +1,12 @@
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, UseMutationResult } from "@tanstack/react-query"
 
 import { jobsKeys } from "../../constants"
 import { jobService } from "../../services"
-import { JobBase, StreamDifferenceRequest } from "../../types"
+import {
+	JobBase,
+	ResyncTableRequest,
+	StreamDifferenceRequest,
+} from "../../types"
 
 // mutationKey: jobsKeys.all() tells the global MutationCache (in App.tsx) to
 // invalidate all job-related queries after this mutation succeeds.
@@ -57,6 +61,23 @@ export const useClearDestination = () => {
 	return useMutation({
 		mutationKey: jobsKeys.all(),
 		mutationFn: (jobId: string) => jobService.clearDestination(jobId),
+	})
+}
+
+interface ResyncTableVariables {
+	jobId: string
+	request: ResyncTableRequest
+}
+
+export const useResyncTable = (): UseMutationResult<
+	void,
+	Error,
+	ResyncTableVariables
+> => {
+	return useMutation({
+		mutationKey: jobsKeys.all(),
+		mutationFn: ({ jobId, request }: ResyncTableVariables): Promise<void> =>
+			jobService.resyncTable(jobId, request),
 	})
 }
 

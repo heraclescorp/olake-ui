@@ -56,6 +56,11 @@ export interface JobBase {
 	advanced_settings?: AdvancedSettings | null
 }
 
+export interface ResyncTableRequest {
+	namespace: string
+	stream_name: string
+}
+
 // Exactly one catalog format per request: legacy streams_config, or both v2 fields.
 export type StreamsCatalogPayload =
 	| { streams_config: string }

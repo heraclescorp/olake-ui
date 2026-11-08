@@ -137,6 +137,11 @@ type StreamDifferenceRequest struct {
 	UpdatedSelectedStreamsConfig  string `json:"updated_selected_streams_config,omitempty"`
 }
 
+type ResyncTableRequest struct {
+	Namespace  string `json:"namespace" binding:"required"`
+	StreamName string `json:"stream_name" binding:"required"`
+}
+
 type JobTaskRequest struct {
 	FilePath string `json:"file_path" binding:"required" example:"sync-123-2-2026-01-19T13:45:09Z"`
 }

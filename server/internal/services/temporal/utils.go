@@ -50,7 +50,7 @@ func buildExecutionReqForSync(job *models.Job, workflowID string) *ExecutionRequ
 // buildExecutionReqForClearDestination builds the ExecutionRequest for a clear-destination job.
 // diff is the stream difference to clear, staged in the format it is given in; empty clears the
 // job's whole stored catalog.
-func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, workflowID string, diff types.StreamsCatalog) (*ExecutionRequest, error) {
+func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, workflowID string, diff types.StreamsCatalog, startSyncAfterClear bool) (*ExecutionRequest, error) {
 	streamsDir := fmt.Sprintf("%s-%d", workflowID, time.Now().Unix())
 
 	catalog := diff
@@ -90,17 +90,18 @@ func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, 
 	args = append(args, catalogArgs...)
 
 	return &ExecutionRequest{
-		Command:       ClearDestination,
-		ConnectorType: job.Source.Type,
-		Version:       job.Source.Version,
-		Args:          args,
-		Configs:       nil,
-		WorkflowID:    workflowID,
-		ProjectID:     job.ProjectID,
-		JobID:         job.ID,
-		Timeout:       GetWorkflowTimeout(ClearDestination),
-		OutputFile:    "state.json",
-		TempPath:      tempPath,
+		Command:             ClearDestination,
+		ConnectorType:       job.Source.Type,
+		Version:             job.Source.Version,
+		Args:                args,
+		Configs:             nil,
+		WorkflowID:          workflowID,
+		ProjectID:           job.ProjectID,
+		JobID:               job.ID,
+		Timeout:             GetWorkflowTimeout(ClearDestination),
+		OutputFile:          "state.json",
+		TempPath:            tempPath,
+		StartSyncAfterClear: startSyncAfterClear,
 	}, nil
 }
 

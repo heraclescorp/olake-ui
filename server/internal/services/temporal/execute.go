@@ -34,7 +34,8 @@ type ExecutionRequest struct {
 	Timeout       time.Duration `json:"timeout"`
 	OutputFile    string        `json:"output_file"` // to get the output file from the workflow
 
-	TempPath string `json:"temp_path"`
+	TempPath            string `json:"temp_path"`
+	StartSyncAfterClear bool   `json:"start_sync_after_clear"`
 }
 
 type JobConfig struct {
@@ -370,7 +371,7 @@ func DecodeConnectionStatus(result map[string]interface{}) (map[string]interface
 	return response, nil
 }
 
-func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff types.StreamsCatalog) error {
+func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff types.StreamsCatalog, startSyncAfterClear bool) error {
 	workflowID, scheduleID := t.WorkflowAndScheduleID(job.ProjectID, job.ID)
 
 	// update the sync schedule to use clear-destination request
@@ -380,7 +381,7 @@ func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff t
 	}
 
 	// update schedule to use clear-destination request
-	clearReq, err := buildExecutionReqForClearDestination(ctx, job, workflowID, diff)
+	clearReq, err := buildExecutionReqForClearDestination(ctx, job, workflowID, diff, startSyncAfterClear)
 	if err != nil {
 		return fmt.Errorf("failed to build execution request for clear-destination: %s", err)
 	}
