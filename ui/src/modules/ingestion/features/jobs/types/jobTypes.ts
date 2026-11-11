@@ -1,4 +1,5 @@
 import { LogEntry } from "@/common/types"
+import { UpsertType } from "@/modules/ingestion/common/types"
 
 export interface Job {
 	id: number
@@ -20,6 +21,8 @@ export interface Job {
 	streams_config?: string
 	available_streams_config?: string
 	selected_streams_config?: string
+	// Detail responses carry this token; list projections omit saved catalogs.
+	catalog_revision?: string
 	frequency: string
 	last_run_type: JobType
 	last_run_state: string
@@ -52,6 +55,7 @@ export interface JobBase {
 	available_streams_config?: string
 	selected_streams_config?: string
 	difference_streams?: string
+	catalog_revision?: string
 	activate?: boolean
 	advanced_settings?: AdvancedSettings | null
 }
@@ -152,6 +156,30 @@ export interface JobTableProps {
 	onDelete: (id: string) => void
 	onCancelJob: (id: string) => void
 }
+
+export interface AutoTableEnrollmentSchema {
+	namespace: string
+	destination_database: string
+}
+
+export interface AutoTableEnrollmentDefaults {
+	normalization: boolean
+	append_mode: boolean
+	update_type: UpsertType
+	sync_new_columns: boolean
+}
+
+export type AutoTableEnrollmentPolicy =
+	| {
+			enabled: true
+			schemas: AutoTableEnrollmentSchema[]
+			defaults: AutoTableEnrollmentDefaults
+	  }
+	| {
+			enabled: false
+			schemas?: AutoTableEnrollmentSchema[]
+			defaults?: AutoTableEnrollmentDefaults
+	  }
 export interface AdvancedSettings {
 	max_discover_threads?: number | null
 	// Derived from the streams config, never user-set: true when any selected
@@ -159,6 +187,7 @@ export interface AdvancedSettings {
 	index_required?: boolean
 	// Engines that will read the destination tables.
 	target_query_engines?: string[]
+	auto_table_enrollment?: AutoTableEnrollmentPolicy
 }
 
 export interface JobConfigurationProps {

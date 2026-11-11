@@ -96,19 +96,20 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusBadRequest, fmt.Sprintf("failed to validate request: %s", err), err)
 		return
 	}
-	var req dto.CreateJobRequest
+	// a job is active unless the request sets "activate": false
+	req := dto.CreateJobRequest{JobMetadata: dto.JobMetadata{Activate: true}}
 	if err := utils.BindAndValidate(c, &req); err != nil {
 		utils.ErrorResponse(c, utils.StatusFromBindError(err), fmt.Sprintf("failed to validate request: %s", err), err)
 		return
 	}
-	if err := validateJobDriverConfig(req.Source, req.Destination); err != nil {
+	if err := dto.ValidateJobDriverConfig(req.Source, req.Destination); err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, fmt.Sprintf("failed to validate request: %s", err), err)
 		return
 	}
 	logger.Debugf("Create job initiated project_id[%s] user_id[%v] job_name[%s]", projectID, userID, req.Name)
 	if err := h.etl.CreateJob(c.Request.Context(), &req, projectID, userID); err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, constants.ErrStreamsFormat) {
+		if errors.Is(err, constants.ErrStreamsFormat) || errors.Is(err, constants.ErrInvalidEnrollmentPolicy) {
 			status = http.StatusBadRequest
 		}
 		utils.ErrorResponse(c, status, fmt.Sprintf("failed to create job: %s", err), err)
@@ -119,7 +120,7 @@ func (h *Handler) CreateJob(c *gin.Context) {
 
 // @Summary Update a job
 // @Tags Jobs
-// @Description Update the configuration details of an existing job.
+// @Description Update the configuration details of an existing job. Enrollment-enabled jobs require the fetched catalog_revision; stale/missing revisions return 409 without overwriting enrolled tables. Settings-only saves preserve source/destination references, selections and CDC state.
 // @Param   projectid     path    string  true    "project id (default is 123)"
 // @Param   id            path    int     true    "job id"
 // @Param   body          body    dto.UpdateJobRequest true "job data"
@@ -127,6 +128,7 @@ func (h *Handler) CreateJob(c *gin.Context) {
 // @Failure 400 {object} dto.Error400Response "failed to validate request"
 // @Failure 401 {object} dto.Error401Response "unauthorized"
 // @Failure 404 {object} dto.Error404Response "job not found"
+// @Failure 409 {object} dto.Error409Response "catalog changed; refresh the job before saving"
 // @Failure 413 {object} dto.Error413Response "payload too large"
 // @Failure 500 {object} dto.Error500Response "failed to update job"
 // @Router /api/v1/project/{projectid}/jobs/{id} [put]
@@ -151,7 +153,7 @@ func (h *Handler) UpdateJob(c *gin.Context) {
 		utils.ErrorResponse(c, utils.StatusFromBindError(err), fmt.Sprintf("failed to validate request: %s", err), err)
 		return
 	}
-	if err := validateJobDriverConfig(req.Source, req.Destination); err != nil {
+	if err := dto.ValidateJobDriverConfig(req.Source, req.Destination); err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, fmt.Sprintf("failed to validate request: %s", err), err)
 		return
 	}
@@ -162,8 +164,10 @@ func (h *Handler) UpdateJob(c *gin.Context) {
 		switch {
 		case errors.Is(err, constants.ErrJobNotFound):
 			status = http.StatusNotFound
-		case errors.Is(err, constants.ErrStreamsFormat):
+		case errors.Is(err, constants.ErrStreamsFormat), errors.Is(err, constants.ErrInvalidEnrollmentPolicy):
 			status = http.StatusBadRequest
+		case errors.Is(err, constants.ErrCatalogRevision), errors.Is(err, constants.ErrJobBusy):
+			status = http.StatusConflict
 		}
 		utils.ErrorResponse(c, status, fmt.Sprintf("failed to update job: %s", err), err)
 		return
@@ -697,24 +701,4 @@ func (h *Handler) UpdateStateFile(c *gin.Context) {
 		return
 	}
 	utils.SuccessResponse(c, fmt.Sprintf("state file updated successfully for job_id[%d]", jobID), nil)
-}
-
-func validateJobDriverConfig(source, destination *dto.DriverConfig) error {
-	if source != nil && source.ID == nil {
-		if err := dto.ValidateSourceType(source.Type); err != nil {
-			return err
-		}
-		if source.Name == "" || source.Version == "" || source.Config == "" {
-			return fmt.Errorf("source name, version, and config are required when source id is not provided")
-		}
-	}
-	if destination != nil && destination.ID == nil {
-		if err := dto.ValidateDestinationType(destination.Type); err != nil {
-			return err
-		}
-		if destination.Name == "" || destination.Version == "" || destination.Config == "" {
-			return fmt.Errorf("destination name, version, and config are required when destination id is not provided")
-		}
-	}
-	return nil
 }

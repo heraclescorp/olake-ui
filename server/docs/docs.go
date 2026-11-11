@@ -879,7 +879,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update the configuration details of an existing job.",
+                "description": "Update the configuration details of an existing job. Enrollment-enabled jobs require the fetched catalog_revision; stale/missing revisions return 409 without overwriting enrolled tables. Settings-only saves preserve source/destination references, selections and CDC state.",
                 "tags": [
                     "Jobs"
                 ],
@@ -932,6 +932,12 @@ const docTemplate = `{
                         "description": "job not found",
                         "schema": {
                             "$ref": "#/definitions/dto.Error404Response"
+                        }
+                    },
+                    "409": {
+                        "description": "catalog changed; refresh the job before saving",
+                        "schema": {
+                            "$ref": "#/definitions/dto.Error409Response"
                         }
                     },
                     "413": {
@@ -3137,6 +3143,14 @@ const docTemplate = `{
         "dto.AdvancedSettings": {
             "type": "object",
             "properties": {
+                "auto_table_enrollment": {
+                    "description": "AutoTableEnrollment opts PostgreSQL -\u003e Iceberg jobs into enrollment of new\ntables in explicitly approved existing schemas; off/missing keeps old behavior.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/dto.AutoTableEnrollmentPolicy"
+                        }
+                    ]
+                },
                 "index_required": {
                     "description": "IndexRequired is derived by the UI: true when any selected stream upserts\nwith positional deletes.",
                     "type": "boolean",
@@ -3156,6 +3170,58 @@ const docTemplate = `{
                         "spark",
                         "duckdb"
                     ]
+                }
+            }
+        },
+        "dto.AutoTableEnrollmentDefaults": {
+            "type": "object",
+            "properties": {
+                "append_mode": {
+                    "type": "boolean"
+                },
+                "normalization": {
+                    "type": "boolean"
+                },
+                "sync_new_columns": {
+                    "type": "boolean"
+                },
+                "update_type": {
+                    "type": "string",
+                    "enum": [
+                        "eq",
+                        "pos",
+                        "dv"
+                    ]
+                }
+            }
+        },
+        "dto.AutoTableEnrollmentPolicy": {
+            "type": "object",
+            "properties": {
+                "defaults": {
+                    "$ref": "#/definitions/dto.AutoTableEnrollmentDefaults"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.AutoTableEnrollmentSchema"
+                    }
+                }
+            }
+        },
+        "dto.AutoTableEnrollmentSchema": {
+            "type": "object",
+            "properties": {
+                "destination_database": {
+                    "description": "DestinationDatabase is an explicit mapping, never inferred from another table.",
+                    "type": "string"
+                },
+                "namespace": {
+                    "description": "Namespace must be unique, nonblank and present in the saved available catalog.",
+                    "type": "string"
                 }
             }
         },
@@ -3580,6 +3646,10 @@ const docTemplate = `{
                     "$ref": "#/definitions/dto.AdvancedSettings"
                 },
                 "available_streams_config": {
+                    "type": "string"
+                },
+                "catalog_revision": {
+                    "description": "CatalogRevision is present on detail responses only: SHA256 of canonical\nsaved catalogs and advanced_settings. Preserve this fetched token on edit.",
                     "type": "string"
                 },
                 "created_at": {
@@ -4065,6 +4135,10 @@ const docTemplate = `{
                 "available_streams_config": {
                     "type": "string"
                 },
+                "catalog_revision": {
+                    "description": "CatalogRevision is required when the saved or submitted enrollment policy\nis enabled. Missing/stale tokens return 409; refresh the job before saving.\nChecked before cancellation and again under the final database write lock.",
+                    "type": "string"
+                },
                 "destination": {
                     "$ref": "#/definitions/dto.DriverConfig"
                 },
@@ -4074,11 +4148,11 @@ const docTemplate = `{
                 },
                 "frequency": {
                     "type": "string",
-                    "example": "0 */12 * * *"
+                    "example": "0 */6 * * *"
                 },
                 "name": {
                     "type": "string",
-                    "example": "my-sync-job-updated"
+                    "example": "my-sync-job"
                 },
                 "selected_streams_config": {
                     "type": "string"

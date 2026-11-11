@@ -5,7 +5,7 @@ import {
 } from "@phosphor-icons/react"
 import { Input, Button, message, Select, Radio, Tooltip, Spin } from "antd"
 import { Cron } from "croner"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useParams, Link, useNavigate } from "react-router"
 
 import { getConnectorImage } from "@/modules/ingestion/common/utils"
@@ -18,6 +18,7 @@ import {
 	AdvancedSettingsCard,
 } from "../components"
 import ResyncTableCard from "../components/ResyncTableCard"
+import AutoTableEnrollmentCard from "../components/AutoTableEnrollmentCard"
 import { DAYS, FREQUENCY_OPTIONS } from "../constants"
 import {
 	useClearDestinationStatus,
@@ -32,11 +33,21 @@ import {
 	isStreamsV2Job,
 	generateCronExpression,
 } from "../utils"
+import {
+	AutoTableEnrollmentDraft,
+	buildEnrollmentPolicy,
+	enrollmentDraftFromPolicy,
+	getEnrollmentCatalog,
+} from "../utils/autoTableEnrollment"
 
 const JobSettings: React.FC = () => {
 	const { jobId } = useParams<{ jobId: string }>()
 	const [jobName, setJobName] = useState("")
 	const navigate = useNavigate()
+	const initialized = useRef<number>()
+	const [catalogRevision, setCatalogRevision] = useState("")
+	const [enrollmentDraft, setEnrollmentDraft] =
+		useState<AutoTableEnrollmentDraft>(enrollmentDraftFromPolicy())
 
 	// Cron-related states
 	const [selectedTime, setSelectedTime] = useState("1")
@@ -81,7 +92,7 @@ const JobSettings: React.FC = () => {
 		isError: isClearDestinationStatusError,
 	} = useClearDestinationStatus(jobId ? parseInt(jobId) : -1)
 	const selectedClearDestinationRunning = clearDestStatus?.running ?? false
-	const { mutateAsync: updateJobMutation } = useUpdateJob()
+	const { mutateAsync: updateJobMutation, isPending: isSaving } = useUpdateJob()
 
 	// Set selected job from route param (source of truth is the URL)
 	useEffect(() => {
@@ -128,6 +139,10 @@ const JobSettings: React.FC = () => {
 
 	// Parse initial cron expression and set states
 	useEffect(() => {
+		if (!job || initialized.current === job.id) {
+			return
+		}
+		initialized.current = job.id
 		if (job?.frequency) {
 			const result = parseCronExpression(job.frequency, DAYS)
 
@@ -151,6 +166,10 @@ const JobSettings: React.FC = () => {
 		if (job) {
 			setJobName(job.name)
 			setAdvancedSettings(job.advanced_settings ?? null)
+			setCatalogRevision(job.catalog_revision ?? "")
+			setEnrollmentDraft(
+				enrollmentDraftFromPolicy(job.advanced_settings?.auto_table_enrollment),
+			)
 		}
 	}, [job])
 
@@ -234,10 +253,26 @@ const JobSettings: React.FC = () => {
 
 	const shouldShowTimeSelection =
 		isTimeSelectionFrequency(frequency) && frequency !== "custom"
+	const enrollmentChanged =
+		!!job &&
+		JSON.stringify(enrollmentDraft) !==
+			JSON.stringify(
+				enrollmentDraftFromPolicy(job.advanced_settings?.auto_table_enrollment),
+			)
 
-	const handleSaveSettings = async () => {
+	const handleSaveSettings = async (): Promise<void> => {
 		if (!jobId || !job) {
 			message.error("Job details not found.")
+			return
+		}
+		if (
+			isSaving ||
+			isClearDestinationStatusError ||
+			selectedClearDestinationRunning
+		) {
+			message.error(
+				"Wait until destination-clear status is available and no clear is running before saving.",
+			)
 			return
 		}
 
@@ -249,11 +284,26 @@ const JobSettings: React.FC = () => {
 			return
 		}
 
+		let settings = advancedSettings
+		if (enrollmentChanged) {
+			const result = buildEnrollmentPolicy({
+				draft: enrollmentDraft,
+				job,
+				catalog: getEnrollmentCatalog(job),
+			})
+			if (!result.valid) {
+				message.error(result.error)
+				return
+			}
+			settings = { ...advancedSettings, auto_table_enrollment: result.policy }
+		}
+
 		try {
 			const jobUpdatePayload = {
 				name: jobName,
 				frequency: cronExpression,
 				activate: job.activate,
+				catalog_revision: catalogRevision,
 				source: {
 					...job.source,
 					config:
@@ -279,7 +329,7 @@ const JobSettings: React.FC = () => {
 				difference_streams: "{}",
 				// Streams can't change here, so index_required round-trips
 				// unchanged from the job's stored advanced settings.
-				advanced_settings: advancedSettings,
+				advanced_settings: settings,
 			}
 
 			await updateJobMutation({ jobId, job: jobUpdatePayload })
@@ -482,6 +532,18 @@ const JobSettings: React.FC = () => {
 									sourceVersion={job?.source.version}
 									queryEnginesDisabled
 								/>
+								{job && (
+									<AutoTableEnrollmentCard
+										job={job}
+										draft={enrollmentDraft}
+										disabled={
+											isSaving ||
+											isClearDestinationStatusError ||
+											selectedClearDestinationRunning
+										}
+										onChange={setEnrollmentDraft}
+									/>
+								)}
 							</div>
 							{job && (
 								<ResyncTableCard
@@ -556,6 +618,10 @@ const JobSettings: React.FC = () => {
 					<Button
 						type="primary"
 						onClick={handleSaveSettings}
+						loading={isSaving}
+						disabled={
+							isClearDestinationStatusError || selectedClearDestinationRunning
+						}
 						className="flex items-center gap-1 bg-primary hover:bg-primary-600"
 					>
 						Save
