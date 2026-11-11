@@ -16,6 +16,7 @@ import {
 } from "../utils"
 import AdvancedSettingsCard from "./AdvancedSettingsCard"
 import JobSourceDestinationSelection from "./JobSourceDestinationSelection"
+import EnrollmentConfiguration from "./EnrollmentConfiguration"
 
 const JobConfiguration: React.FC<JobConfigurationProps> = ({
 	stepNumber = 1,
@@ -286,6 +287,7 @@ const JobConfiguration: React.FC<JobConfigurationProps> = ({
 
 			{/* Advanced Settings Card */}
 			<AdvancedSettingsCard />
+			<EnrollmentConfiguration />
 		</div>
 	)
 }

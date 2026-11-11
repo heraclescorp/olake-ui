@@ -3,6 +3,10 @@ import { create } from "zustand"
 import { Entity } from "@/modules/ingestion/common/types"
 
 import { AdvancedSettings } from "../types"
+import {
+	AutoTableEnrollmentDraft,
+	EnrollmentCatalog,
+} from "../utils/autoTableEnrollment"
 
 interface JobConfigurationState {
 	jobName: string
@@ -12,6 +16,8 @@ interface JobConfigurationState {
 	advancedSettings: AdvancedSettings | null
 	savedAdvancedSettings: AdvancedSettings | null
 	isEditMode: boolean
+	enrollmentDraft: AutoTableEnrollmentDraft | null
+	enrollmentCatalog: EnrollmentCatalog | null
 }
 
 interface JobConfigurationActions {
@@ -22,6 +28,8 @@ interface JobConfigurationActions {
 	setAdvancedSettings: (settings: AdvancedSettings | null) => void
 	setSavedAdvancedSettings: (settings: AdvancedSettings | null) => void
 	setIsEditMode: (isEdit: boolean) => void
+	setEnrollmentDraft: (draft: AutoTableEnrollmentDraft | null) => void
+	setEnrollmentCatalog: (catalog: EnrollmentCatalog | null) => void
 	reset: () => void
 }
 
@@ -35,6 +43,8 @@ const initialState: JobConfigurationState = {
 	advancedSettings: null,
 	savedAdvancedSettings: null,
 	isEditMode: false,
+	enrollmentDraft: null,
+	enrollmentCatalog: null,
 }
 
 export const useJobConfigurationStore = create<JobConfigurationStore>(set => ({
@@ -47,5 +57,7 @@ export const useJobConfigurationStore = create<JobConfigurationStore>(set => ({
 	setSavedAdvancedSettings: savedAdvancedSettings =>
 		set({ savedAdvancedSettings }),
 	setIsEditMode: isEditMode => set({ isEditMode }),
+	setEnrollmentDraft: enrollmentDraft => set({ enrollmentDraft }),
+	setEnrollmentCatalog: enrollmentCatalog => set({ enrollmentCatalog }),
 	reset: () => set(initialState),
 }))

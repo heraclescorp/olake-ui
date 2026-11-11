@@ -26,6 +26,13 @@ export const STREAM_DEFAULTS = {
 	filter: "",
 } as const
 
+export const NEW_TABLE_DEFAULTS = {
+	normalization: true,
+	append_mode: false,
+	update_type: UpsertType.POSITIONAL,
+	sync_new_columns: true,
+}
+
 export const SYNC_MODE_MAP = {
 	FULL_REFRESH: "full_refresh",
 	INCREMENTAL: "incremental",

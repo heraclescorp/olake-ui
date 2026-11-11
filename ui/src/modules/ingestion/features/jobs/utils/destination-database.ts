@@ -1,6 +1,7 @@
 import {
+	SelectedStream,
 	SelectedStreamsByNamespace,
-	StreamData,
+	StreamDefinition,
 	StreamsDataStructure,
 } from "@/modules/ingestion/common/types"
 
@@ -92,16 +93,72 @@ export const extractNamespaceFromDestination = (
 		: fallbackNamespace
 }
 
+export const selectedDestinationDatabaseFor = (
+	stream: StreamDefinition | undefined,
+	selection: Pick<SelectedStream, "destination_database">,
+): string | undefined =>
+	selection.destination_database?.trim()
+		? selection.destination_database
+		: stream?.destination_database
+
+export const effectiveSelectedStreamsRouting = (
+	catalog: StreamsDataStructure,
+): SelectedStreamsByNamespace => {
+	const available = new Map<string, Map<string, StreamDefinition>>()
+	for (const { stream } of catalog.streams) {
+		const namespace = stream.namespace ?? ""
+		let streams = available.get(namespace)
+		if (!streams) {
+			streams = new Map()
+			available.set(namespace, streams)
+		}
+		streams.set(stream.name, stream)
+	}
+	const selections: SelectedStreamsByNamespace = {}
+	for (const [namespace, streams] of Object.entries(
+		catalog.selected_streams ?? {},
+	)) {
+		selections[namespace] = streams
+			.filter(stream => !stream.disabled)
+			.map(selection => ({
+				...selection,
+				destination_database: selectedDestinationDatabaseFor(
+					available.get(namespace)?.get(selection.stream_name),
+					selection,
+				),
+			}))
+	}
+	return selections
+}
+
 /**
  * Destination database the selected entries use, if any. v2 persists
  * destination_database only on selected entries; legacy entries carry none.
  */
 export const configuredDestinationDatabase = (
 	selectedStreams: SelectedStreamsByNamespace,
-): string | undefined =>
-	Object.values(selectedStreams)
+): string | undefined => {
+	const databases = Object.values(selectedStreams)
 		.flat()
-		.find(s => s.destination_database)?.destination_database
+		.filter(stream => !stream.disabled)
+		.map(stream => stream.destination_database)
+		.filter((database): database is string => !!database)
+	const configured = databases[0]
+	if (!configured) {
+		return undefined
+	}
+	const routing = configured.includes(":")
+		? `${extractDatabasePrefix(configured)}:`
+		: configured
+	return databases.every(
+		database =>
+			(database.includes(":")
+				? `${extractDatabasePrefix(database)}:`
+				: database) === routing,
+	)
+		? configured
+		: undefined
+}
 
 /**
  * Destination database for a stream that has no selected entry yet: follows the
@@ -109,7 +166,7 @@ export const configuredDestinationDatabase = (
  * suffix), else the discovered value.
  */
 export const destinationDatabaseFor = (
-	stream: StreamData["stream"],
+	stream: StreamDefinition,
 	configured: string | undefined,
 ): string | undefined => {
 	if (!configured) return stream.destination_database

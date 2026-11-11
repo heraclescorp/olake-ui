@@ -45,6 +45,11 @@ import {
 	willBuildIndex,
 	withIndexRequired,
 } from "../utils"
+import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
+import {
+	buildEnrollmentPolicy,
+	getEnrollmentCatalog,
+} from "../utils/autoTableEnrollment"
 
 const JobEdit: React.FC = () => {
 	const navigate = useNavigate()
@@ -109,6 +114,7 @@ const JobEdit: React.FC = () => {
 		setSavedAdvancedSettings,
 		reset: resetJobConfig,
 	} = useJobConfigurationStore()
+	const enrollment = useEnrollmentConfiguration()
 
 	const initialStreamsData = useRef<SelectedStreams | null>(null)
 	// Keep the token paired with the catalog used to initialize this editor.
@@ -121,6 +127,9 @@ const JobEdit: React.FC = () => {
 
 	const initializeFromExistingJob = (job: Job) => {
 		originalCatalogRevision.current = job.catalog_revision
+		useJobConfigurationStore
+			.getState()
+			.setEnrollmentCatalog(getEnrollmentCatalog(job))
 		setJobName(job.name)
 
 		// Resolve source snapshot
@@ -386,6 +395,23 @@ const JobEdit: React.FC = () => {
 		try {
 			// Create the job update payload
 			const jobUpdatePayload = getJobUpdatePayLoad(streamsData, diff)
+			if (enrollment.supported || advancedSettings?.auto_table_enrollment) {
+				const result = buildEnrollmentPolicy({
+					...enrollment,
+					catalogRevision: originalCatalogRevision.current,
+					requireRevision:
+						enrollment.draft.enabled ||
+						savedAdvancedSettings?.auto_table_enrollment?.enabled === true,
+				})
+				if (!result.valid) {
+					message.error(result.error)
+					return
+				}
+				jobUpdatePayload.advanced_settings = {
+					...jobUpdatePayload.advanced_settings,
+					auto_table_enrollment: result.policy,
+				}
+			}
 
 			await updateJob({ jobId, job: jobUpdatePayload })
 			navigate("/jobs")

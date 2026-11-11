@@ -18,6 +18,7 @@ var (
 	ErrInvalidEnrollmentPolicy = errors.New("invalid auto table enrollment policy")
 	ErrCatalogRevision         = errors.New("catalog changed; refresh the job before saving to preserve automatically enrolled tables")
 	ErrJobBusy                 = errors.New("job is busy or paused")
+	ErrInvalidResync           = errors.New("invalid table resync")
 
 	// ErrStreamsFormat rejects a catalog whose format does not fit the job or its driver
 	ErrStreamsFormat = errors.New("invalid streams format")

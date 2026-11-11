@@ -50,6 +50,7 @@ const NormalizationSectionView = ({
 						</a>
 					</div>
 					<Switch
+						aria-label="Normalization"
 						checked={normalization}
 						onChange={onChange ?? (() => {})}
 						disabled={!isSelected}

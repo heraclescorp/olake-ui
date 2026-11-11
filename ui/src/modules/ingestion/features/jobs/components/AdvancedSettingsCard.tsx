@@ -5,6 +5,7 @@ import React from "react"
 
 import { restrictNumericInput } from "@/common/utils"
 import { useAvailableQueryEngines } from "@/modules/ingestion/features/sources/hooks"
+import { getConnectorInLowerCase } from "@/modules/ingestion/common/utils"
 
 import { useJobConfigurationStore } from "../stores"
 
@@ -28,15 +29,16 @@ const AdvancedSettingsCard: React.FC<AdvancedSettingsCardProps> = ({
 	} = useJobConfigurationStore()
 
 	const {
-		data: queryEngines = [],
+		data: queryEngineCatalog,
 		isLoading: isLoadingQueryEngines,
 		isFetching: isFetchingQueryEngines,
 		isError: isQueryEnginesError,
 		refetch: refetchQueryEngines,
 	} = useAvailableQueryEngines(
-		(sourceType ?? selectedSource?.type ?? "").toLowerCase(),
+		getConnectorInLowerCase(sourceType ?? selectedSource?.type ?? ""),
 		sourceVersion ?? selectedSource?.version ?? "",
 	)
+	const queryEngines = queryEngineCatalog?.engines ?? []
 
 	const targetQueryEngines = advancedSettings?.target_query_engines ?? []
 	const setQueryEngines = (target_query_engines: string[]) =>
@@ -103,6 +105,7 @@ const AdvancedSettingsCard: React.FC<AdvancedSettingsCardProps> = ({
 							</div>
 						) : (
 							<Select
+								aria-label="Target Query Engines"
 								mode="multiple"
 								allowClear
 								className="w-full"

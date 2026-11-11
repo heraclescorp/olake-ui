@@ -9,6 +9,7 @@ import {
 	Job,
 	JobBase,
 	JobTask,
+	ResyncTableRequest,
 	StreamDifferenceRequest,
 	TaskLogsDirection,
 	TaskLogsPaginationParams,
@@ -199,6 +200,16 @@ export const jobService = {
 			console.error("Error clearing destination:", error)
 			throw error
 		}
+	},
+	resyncTable: async (
+		jobId: string,
+		request: ResyncTableRequest,
+	): Promise<void> => {
+		await api.post<void>(
+			`${API_CONFIG.ENDPOINTS.ETL.JOBS(API_CONFIG.PROJECT_ID)}/${jobId}/resync-table`,
+			request,
+			{ showNotification: true },
+		)
 	},
 	getClearDestinationStatus: async (
 		jobId: string,

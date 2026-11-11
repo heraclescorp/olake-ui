@@ -39,7 +39,7 @@ export const useAvailableQueryEngines = (type: string, version: string) => {
 		retry: false,
 		staleTime: Infinity,
 		gcTime: 24 * 60 * 60 * 1000, // 24 hours
-		select: response => response?.spec?.query_engines?.engines ?? [],
+		select: response => response?.spec?.query_engines,
 	})
 }
 
