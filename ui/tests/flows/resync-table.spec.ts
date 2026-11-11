@@ -83,6 +83,7 @@ const installResyncFixture = async (
 			config: "{}",
 		},
 		frequency: "* * * * *",
+		catalog_revision: "a1".repeat(32),
 		last_run_type: JobType.Sync,
 		last_run_state: options.running ? "running" : "completed",
 		last_run_time: "2026-11-01T00:00:00Z",
@@ -166,7 +167,11 @@ const installResyncFixture = async (
 		} else if (path.endsWith("/operations/fixture-spec")) {
 			data = { status: "succeeded" }
 		} else if (path.endsWith("/operations/fixture-spec/result")) {
-			data = { spec: { query_engines: { engines: [] } } }
+			data = {
+				spec: {
+					query_engines: { engines: [], writable_update_types: ["eq", "pos"] },
+				},
+			}
 		}
 		await route.fulfill({ json: { message: "Fixture", data } })
 	})

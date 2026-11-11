@@ -5,7 +5,7 @@ import {
 } from "@phosphor-icons/react"
 import { Input, Button, message, Select, Radio, Tooltip, Spin } from "antd"
 import { Cron } from "croner"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { useParams, Link, useNavigate } from "react-router"
 
 import { getConnectorImage } from "@/modules/ingestion/common/utils"
@@ -26,6 +26,7 @@ import {
 	useUpdateJob,
 } from "../hooks"
 import { useJobConfigurationStore, useJobStore } from "../stores"
+import { useEnrollmentCapabilities } from "../hooks/useEnrollmentCapabilities"
 import {
 	parseCronExpression,
 	validateCronExpression,
@@ -38,6 +39,7 @@ import {
 	buildEnrollmentPolicy,
 	enrollmentDraftFromPolicy,
 	getEnrollmentCatalog,
+	isAutoTableEnrollmentSupported,
 } from "../utils/autoTableEnrollment"
 
 const JobSettings: React.FC = () => {
@@ -46,8 +48,8 @@ const JobSettings: React.FC = () => {
 	const navigate = useNavigate()
 	const initialized = useRef<number>()
 	const [catalogRevision, setCatalogRevision] = useState("")
-	const [enrollmentDraft, setEnrollmentDraft] =
-		useState<AutoTableEnrollmentDraft>(enrollmentDraftFromPolicy())
+	const [editedEnrollmentDraft, setEnrollmentDraft] =
+		useState<AutoTableEnrollmentDraft | null>(null)
 
 	// Cron-related states
 	const [selectedTime, setSelectedTime] = useState("1")
@@ -86,6 +88,10 @@ const JobSettings: React.FC = () => {
 		staleTime: Infinity,
 		refetchOnMount: "always",
 	})
+	const enrollmentCatalog = useMemo(
+		() => (job ? getEnrollmentCatalog(job) : undefined),
+		[job],
+	)
 	const {
 		data: clearDestStatus,
 		isLoading: isClearDestinationStatusLoading,
@@ -93,6 +99,21 @@ const JobSettings: React.FC = () => {
 	} = useClearDestinationStatus(jobId ? parseInt(jobId) : -1)
 	const selectedClearDestinationRunning = clearDestStatus?.running ?? false
 	const { mutateAsync: updateJobMutation, isPending: isSaving } = useUpdateJob()
+	const enrollmentSupported = isAutoTableEnrollmentSupported(
+		job?.source.type ?? "",
+		job?.destination.type ?? "",
+	)
+	const capabilities = useEnrollmentCapabilities(
+		job?.source.type ?? "",
+		job?.source.version ?? "",
+		job?.advanced_settings?.target_query_engines ?? [],
+	)
+	const initialEnrollmentDraft = enrollmentDraftFromPolicy(
+		job?.advanced_settings?.auto_table_enrollment,
+		enrollmentSupported,
+		capabilities.error ? undefined : capabilities.availableUpdateTypes,
+	)
+	const enrollmentDraft = editedEnrollmentDraft ?? initialEnrollmentDraft
 
 	// Set selected job from route param (source of truth is the URL)
 	useEffect(() => {
@@ -167,9 +188,7 @@ const JobSettings: React.FC = () => {
 			setJobName(job.name)
 			setAdvancedSettings(job.advanced_settings ?? null)
 			setCatalogRevision(job.catalog_revision ?? "")
-			setEnrollmentDraft(
-				enrollmentDraftFromPolicy(job.advanced_settings?.auto_table_enrollment),
-			)
+			setEnrollmentDraft(null)
 		}
 	}, [job])
 
@@ -253,15 +272,9 @@ const JobSettings: React.FC = () => {
 
 	const shouldShowTimeSelection =
 		isTimeSelectionFrequency(frequency) && frequency !== "custom"
-	const enrollmentChanged =
-		!!job &&
-		JSON.stringify(enrollmentDraft) !==
-			JSON.stringify(
-				enrollmentDraftFromPolicy(job.advanced_settings?.auto_table_enrollment),
-			)
 
 	const handleSaveSettings = async (): Promise<void> => {
-		if (!jobId || !job) {
+		if (!jobId || !job || !enrollmentCatalog) {
 			message.error("Job details not found.")
 			return
 		}
@@ -285,11 +298,16 @@ const JobSettings: React.FC = () => {
 		}
 
 		let settings = advancedSettings
-		if (enrollmentChanged) {
+		if (enrollmentSupported || job.advanced_settings?.auto_table_enrollment) {
 			const result = buildEnrollmentPolicy({
 				draft: enrollmentDraft,
-				job,
-				catalog: getEnrollmentCatalog(job),
+				supported: enrollmentSupported,
+				capabilities,
+				catalogRevision,
+				requireRevision:
+					enrollmentDraft.enabled ||
+					job.advanced_settings?.auto_table_enrollment?.enabled === true,
+				catalog: enrollmentCatalog,
 			})
 			if (!result.valid) {
 				message.error(result.error)
@@ -345,7 +363,9 @@ const JobSettings: React.FC = () => {
 		(jobName !== job.name ||
 			cronExpression !== job.frequency ||
 			JSON.stringify(advancedSettings ?? null) !==
-				JSON.stringify(job.advanced_settings ?? null))
+				JSON.stringify(job.advanced_settings ?? null) ||
+			JSON.stringify(enrollmentDraft) !==
+				JSON.stringify(initialEnrollmentDraft))
 	const resyncDisabledReason = !job
 		? "Job details are unavailable."
 		: isClearDestinationStatusError
@@ -534,7 +554,9 @@ const JobSettings: React.FC = () => {
 								/>
 								{job && (
 									<AutoTableEnrollmentCard
-										job={job}
+										supported={enrollmentSupported}
+										catalog={enrollmentCatalog}
+										capabilities={capabilities}
 										draft={enrollmentDraft}
 										disabled={
 											isSaving ||

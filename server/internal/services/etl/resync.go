@@ -13,6 +13,12 @@ import (
 )
 
 func (s Service) ResyncTable(ctx context.Context, projectID string, jobID int, req dto.ResyncTableRequest) error {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		return fmt.Errorf("failed to get job: %w", err)

@@ -208,9 +208,6 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 		if err != nil {
 			return err
 		}
-		if err := validateEnrollmentPolicy(req.AdvancedSettings, sourceType, destinationType, existingJob.StreamsCatalog()); err != nil {
-			return err
-		}
 		if err := validateEnrollmentPolicy(req.AdvancedSettings, sourceType, destinationType, types.StreamsCatalog{Streams: req.StreamsConfig, Available: req.AvailableStreamsConfig, Selected: req.SelectedStreamsConfig}); err != nil {
 			return err
 		}

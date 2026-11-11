@@ -6,7 +6,7 @@ import {
 import { useIsFetching } from "@tanstack/react-query"
 import { Input, Empty, Spin, Tooltip, Button } from "antd"
 import clsx from "clsx"
-import React, { useEffect, useState, useMemo } from "react"
+import React, { useEffect, useState, useMemo, useRef } from "react"
 import { useShallow } from "zustand/react/shallow"
 
 import { ErrorLogsModal } from "@/common/components/modals"
@@ -39,6 +39,8 @@ import {
 	parseDiscoverResponse,
 	shouldUseFilterConfig,
 } from "../utils/streams"
+import EnrollmentConfiguration from "./EnrollmentConfiguration"
+import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
 
 const STREAM_FILTERS = ["All tables", "Selected", "Not Selected"]
 
@@ -70,6 +72,9 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 	)
 
 	const discoverMutation = useDiscoverSourceStreams()
+	const enrollment = useEnrollmentConfiguration()
+	const enrollmentRef = useRef(enrollment)
+	enrollmentRef.current = enrollment
 
 	useEffect(() => {
 		setUseFilterConfig(
@@ -127,12 +132,20 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 			{
 				onSuccess: response => {
 					const parsed = parseDiscoverResponse(response)
+					const currentEnrollment = enrollmentRef.current
 					const data: StreamsDataStructure =
 						getStreamsDataFromSourceStreamsResponse(
 							parsed.response,
 							destinationType,
 							sourceConnector,
 							sourceVersion,
+							currentEnrollment.supported
+								? currentEnrollment.draft.defaults
+								: undefined,
+							currentEnrollment.capabilities.error
+								? undefined
+								: currentEnrollment.capabilities.availableUpdateTypes,
+							fromJobEditFlow,
 						)
 
 					initializeFromDiscovery(data, parsed.format)
@@ -394,6 +407,7 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 					) : null}
 				</div>
 			</div>
+			<EnrollmentConfiguration />
 
 			{/* Destination Database Modal */}
 			<DestinationDatabaseModal

@@ -1,14 +1,12 @@
-import { Alert, Checkbox, Input, Select, Switch } from "antd"
-import { useMemo } from "react"
+import { Alert, Select, Switch } from "antd"
 
 import { UpsertType } from "@/modules/ingestion/common/types"
 
 import { UPSERT_TYPE_OPTIONS } from "../constants"
-import { Job } from "../types"
 import {
 	AutoTableEnrollmentDraft,
-	getEnrollmentCatalog,
-	isAutoTableEnrollmentSupported,
+	EnrollmentCatalog,
+	EnrollmentCapabilities,
 } from "../utils/autoTableEnrollment"
 
 type BooleanChoice = "enabled" | "disabled"
@@ -55,27 +53,29 @@ const BooleanSetting = ({
 )
 
 interface AutoTableEnrollmentCardProps {
-	job: Job
+	supported: boolean
+	catalog?: EnrollmentCatalog
+	capabilities: EnrollmentCapabilities
 	draft: AutoTableEnrollmentDraft
 	disabled: boolean
 	onChange: (draft: AutoTableEnrollmentDraft) => void
 }
 
 const AutoTableEnrollmentCard = ({
-	job,
+	supported,
+	catalog,
+	capabilities,
 	draft,
 	disabled,
 	onChange,
 }: AutoTableEnrollmentCardProps): JSX.Element => {
-	const supported = isAutoTableEnrollmentSupported(job)
-	const catalog = useMemo(() => getEnrollmentCatalog(job), [job])
 	const controlsDisabled = disabled || !supported
 	const deleteOptions = UPSERT_TYPE_OPTIONS.map(option => ({
 		value: option.value,
 		label: option.label,
 		disabled:
 			draft.defaults.append_mode !== true &&
-			!catalog.availableUpdateTypes.includes(option.value),
+			!capabilities.availableUpdateTypes.includes(option.value),
 	}))
 
 	return (
@@ -92,8 +92,8 @@ const AutoTableEnrollmentCard = ({
 						Automatically add new tables
 					</h3>
 					<p className="mt-1 text-sm text-gray-600">
-						Before each run, OLake checks the source schemas you choose for new
-						tables. It adds supported tables to this job, copies their existing
+						Before each run, OLake checks existing source schemas for new
+						tables. It uses this job's stream routing, copies their existing
 						rows, and keeps them updated on later runs.
 					</p>
 				</div>
@@ -124,9 +124,8 @@ const AutoTableEnrollmentCard = ({
 									listed in this job but not selected stay unselected.
 								</li>
 								<li>
-									A schema groups tables in a source database. Only the schemas
-									you choose below are checked; new schemas are not included
-									automatically.
+									A schema groups tables in a source database. Existing catalog
+									schemas are included automatically; brand-new schemas are not.
 								</li>
 								<li>
 									Copying a large new table can delay updates to other tables in
@@ -146,90 +145,28 @@ const AutoTableEnrollmentCard = ({
 							</ul>
 						}
 					/>
-					{catalog.error && (
+					{catalog?.error && (
 						<Alert
 							type="error"
 							showIcon
 							message={catalog.error}
 						/>
 					)}
-					<fieldset
-						disabled={controlsDisabled}
-						className="flex flex-col gap-3"
-					>
-						<legend className="mb-3 text-sm font-medium">
-							Source schemas to check
-						</legend>
-						{catalog.namespaces.length === 0 && !catalog.error && (
-							<p className="text-sm text-gray-600">
-								No source schemas are available. Refresh the table list for this
-								job.
-							</p>
-						)}
-						{catalog.namespaces.map(namespace => {
-							const mapping = draft.schemas.find(
-								schema => schema.namespace === namespace,
-							)
-							return (
-								<div
-									key={namespace}
-									className="flex flex-col gap-2 rounded-lg border border-olake-border p-3 sm:flex-row sm:items-center sm:gap-5"
-								>
-									<Checkbox
-										checked={mapping !== undefined}
-										disabled={controlsDisabled}
-										onChange={(event): void =>
-											onChange({
-												...draft,
-												schemas: event.target.checked
-													? [
-															...draft.schemas,
-															{ namespace, destination_database: "" },
-														]
-													: draft.schemas.filter(
-															schema => schema.namespace !== namespace,
-														),
-											})
-										}
-									>
-										Approve {namespace}
-									</Checkbox>
-									{mapping && (
-										<label className="flex flex-1 flex-col gap-1 text-sm text-gray-700">
-											Destination database for {namespace}
-											<Input
-												aria-label={`Destination database for ${namespace}`}
-												value={mapping.destination_database}
-												disabled={controlsDisabled}
-												placeholder="Enter a destination database"
-												onChange={(event): void =>
-													onChange({
-														...draft,
-														schemas: draft.schemas.map(schema =>
-															schema.namespace === namespace
-																? {
-																		...schema,
-																		destination_database: event.target.value,
-																	}
-																: schema,
-														),
-													})
-												}
-											/>
-										</label>
-									)}
-								</div>
-							)
-						})}
-					</fieldset>
 				</div>
+			)}
+			{draft.enabled && capabilities.error && (
+				<Alert
+					type="warning"
+					showIcon
+					message={capabilities.error}
+				/>
 			)}
 			<h4 className="mb-2 mt-5 text-sm font-medium">Settings for new tables</h4>
 			<p className="mb-4 text-sm text-gray-600">
-				Choose how OLake should copy tables that are automatically added to this
-				job. Saving these settings does not turn on automatic table selection or
-				change tables already in the job. All columns that exist when a table is
-				added are copied.
+				Choose how OLake should copy newly added tables. The switch above
+				controls automatic enrollment; these defaults do not change tables
+				already in the job. All columns that exist when a table is added are
+				copied.
 			</p>
 			<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 				<BooleanSetting

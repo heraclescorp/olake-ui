@@ -32,38 +32,40 @@ export type MultiFilterCondition = {
 	logicalOperator: LogicalOperator
 }
 
-export type StreamData = {
-	stream: {
-		name: string
-		namespace?: string
-		json_schema: UnknownObject
-		type_schema?: {
-			properties: Record<
-				string,
-				{
-					destination_column_name?: string
-					olake_column?: boolean
-					type: string[]
-					format?: string
-					properties?: Record<string, any>
-				}
-			>
-		}
-		supported_sync_modes?: SyncMode[]
-		source_defined_cursor?: boolean
-		default_cursor_field?: string[]
-		available_cursor_fields?: string[]
-		cursor_field?: string
-		// Discovered default only; in streams v2 the configured sync mode lives on
-		// the selected_streams entry, so the catalog may omit it.
-		sync_mode?: SyncMode
-		destination_database?: string
-		destination_table?: string
-		source_defined_primary_key?: string[]
-		default_stream_properties: DefaultStreamProperties
-		available_update_types?: UpsertType[]
-		[key: string]: unknown
+export interface StreamDefinition {
+	name: string
+	namespace?: string
+	json_schema: UnknownObject
+	type_schema?: {
+		properties: Record<
+			string,
+			{
+				destination_column_name?: string
+				olake_column?: boolean
+				type: string[]
+				format?: string
+				properties?: Record<string, any>
+			}
+		>
 	}
+	supported_sync_modes?: SyncMode[]
+	source_defined_cursor?: boolean
+	default_cursor_field?: string[]
+	available_cursor_fields?: string[]
+	cursor_field?: string
+	// Discovered default only; in streams v2 the configured sync mode lives on
+	// the selected_streams entry, so the catalog may omit it.
+	sync_mode?: SyncMode
+	destination_database?: string
+	destination_table?: string
+	source_defined_primary_key?: string[]
+	default_stream_properties: DefaultStreamProperties
+	available_update_types?: UpsertType[]
+	[key: string]: unknown
+}
+
+export type StreamData = {
+	stream: StreamDefinition
 }
 
 export interface DefaultStreamProperties {

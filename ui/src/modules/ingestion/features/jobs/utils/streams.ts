@@ -35,6 +35,7 @@ import {
 import { IngestionMode } from "../enums"
 import {
 	AdvancedSettings,
+	AutoTableEnrollmentDefaults,
 	StreamsCatalogPayload,
 	CursorFieldValues,
 	StreamDifferenceRequest,
@@ -42,6 +43,8 @@ import {
 import {
 	configuredDestinationDatabase,
 	destinationDatabaseFor,
+	effectiveSelectedStreamsRouting,
+	selectedDestinationDatabaseFor,
 } from "./destination-database"
 import {
 	castFilterConditionValue,
@@ -79,6 +82,9 @@ export const getStreamsDataFromSourceStreamsResponse = (
 	destinationType?: string,
 	sourceType?: string,
 	sourceVersion?: string,
+	newTableDefaults?: AutoTableEnrollmentDefaults,
+	currentAvailableUpdateTypes?: UpsertType[],
+	preserveSelectedSettings = false,
 ): StreamsDataStructure => {
 	const mergedSelectedStreams: SelectedStreamsByNamespace = {}
 
@@ -100,7 +106,10 @@ export const getStreamsDataFromSourceStreamsResponse = (
 
 	// Computed once: streams without a database follow the one the selected entries use.
 	const configuredDatabase = configuredDestinationDatabase(
-		response.selected_streams ?? {},
+		effectiveSelectedStreamsRouting({
+			streams: response.available_streams.streams,
+			selected_streams: response.selected_streams ?? {},
+		}),
 	)
 
 	// Iterate through all streams
@@ -119,11 +128,27 @@ export const getStreamsDataFromSourceStreamsResponse = (
 		const matchingSelectedStream = selectedNamespaceStreams.find(
 			s => s.stream_name === streamName,
 		)
+		const tableDefaults =
+			matchingSelectedStream && preserveSelectedSettings
+				? undefined
+				: newTableDefaults
 
 		const streamDefaults = stream.stream.default_stream_properties
+		const availableUpdateTypes =
+			currentAvailableUpdateTypes ?? stream.stream.available_update_types ?? []
+		const newTableUpdateType =
+			tableDefaults &&
+			(availableUpdateTypes.includes(tableDefaults.update_type)
+				? tableDefaults.update_type
+				: availableUpdateTypes[0])
 		const defaults = {
 			...STREAM_DEFAULTS,
 			...streamDefaults,
+			...(tableDefaults && {
+				normalization: tableDefaults.normalization,
+				append_mode: tableDefaults.append_mode,
+				update_type: newTableUpdateType,
+			}),
 		}
 
 		if (matchingSelectedStream) {
@@ -131,7 +156,9 @@ export const getStreamsDataFromSourceStreamsResponse = (
 			// v2 entries omit append_mode when it equals the stream default; force
 			// append when source or destination can't upsert
 			const appendMode =
-				(matchingSelectedStream.append_mode ?? defaults.append_mode) ||
+				(tableDefaults?.append_mode ??
+					matchingSelectedStream.append_mode ??
+					defaults.append_mode) ||
 				!isDestUpsertModeSupported ||
 				!isSourceUpsertModeSupported
 			const upsertMode = !appendMode
@@ -151,20 +178,34 @@ export const getStreamsDataFromSourceStreamsResponse = (
 					},
 				}),
 				...selectedStreamRest,
-				disabled: false,
+				...(tableDefaults &&
+					supportsColumnSelection && {
+						selected_columns: {
+							columns:
+								matchingSelectedStream.selected_columns?.columns ??
+								Object.keys(stream.stream.type_schema?.properties ?? {}),
+							sync_new_columns: tableDefaults.sync_new_columns,
+						},
+					}),
+				disabled: matchingSelectedStream.disabled ?? false,
 				sync_mode: syncMode,
 				cursor_field:
 					syncMode === SyncMode.INCREMENTAL ? cursorField : undefined,
-				destination_database:
-					matchingSelectedStream.destination_database ??
-					destinationDatabaseFor(stream.stream, configuredDatabase),
+				destination_database: selectedDestinationDatabaseFor(
+					stream.stream,
+					matchingSelectedStream,
+				),
 				append_mode: appendMode,
 				normalization:
-					matchingSelectedStream.normalization ?? defaults.normalization,
+					tableDefaults?.normalization ??
+					matchingSelectedStream.normalization ??
+					defaults.normalization,
 				// update_type only applies while the stream runs in upsert mode;
 				// older saved jobs carry no value, so fall back to the catalog default.
 				...(upsertMode && {
-					update_type: savedUpdateType ?? getDefaultUpsertType(stream),
+					update_type: tableDefaults
+						? newTableUpdateType
+						: (savedUpdateType ?? getDefaultUpsertType(stream)),
 				}),
 			})
 		} else {
@@ -191,7 +232,7 @@ export const getStreamsDataFromSourceStreamsResponse = (
 				...(supportsColumnSelection && {
 					selected_columns: {
 						columns: Object.keys(stream.stream.type_schema?.properties ?? {}),
-						sync_new_columns: true,
+						sync_new_columns: tableDefaults?.sync_new_columns ?? true,
 					},
 				}),
 			})

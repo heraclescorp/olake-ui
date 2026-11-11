@@ -106,6 +106,7 @@ const UpsertTypeSectionView = ({
 				</div>
 			</div>
 			<Select
+				aria-label="Upsert Type"
 				disabled={!isSelected}
 				className="w-full"
 				value={upsertType}

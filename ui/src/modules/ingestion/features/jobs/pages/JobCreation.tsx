@@ -57,6 +57,8 @@ import {
 	withIndexRequired,
 } from "../utils"
 
+import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
+import { buildEnrollmentPolicy } from "../utils/autoTableEnrollment"
 // Internal imports from components
 
 const JobCreation: React.FC = () => {
@@ -87,6 +89,7 @@ const JobCreation: React.FC = () => {
 	} = useJobConfigurationStore()
 
 	const streamsData = useStreamSelectionStore(state => state.streamsData)
+	const enrollment = useEnrollmentConfiguration()
 
 	// Initialize the store exactly once using initialData if navigating
 	useEffect(() => {
@@ -220,6 +223,21 @@ const JobCreation: React.FC = () => {
 	// Job creation handler
 	const handleJobCreation = async () => {
 		if (!streamsData) return
+		const result = buildEnrollmentPolicy({
+			...enrollment,
+		})
+		if (
+			(enrollment.supported || advancedSettings?.auto_table_enrollment) &&
+			!result.valid
+		) {
+			message.error(result.error)
+			return
+		}
+		const settings =
+			result.valid &&
+			(enrollment.supported || advancedSettings?.auto_table_enrollment)
+				? { ...advancedSettings, auto_table_enrollment: result.policy }
+				: advancedSettings
 		const newJobData: JobBase = {
 			name: jobName,
 			source: {
@@ -241,7 +259,7 @@ const JobCreation: React.FC = () => {
 				useStreamSelectionStore.getState().catalogFormat,
 			),
 			frequency: cronExpression,
-			advanced_settings: withIndexRequired(advancedSettings, streamsData),
+			advanced_settings: withIndexRequired(settings, streamsData),
 		}
 
 		try {
@@ -330,7 +348,10 @@ const JobCreation: React.FC = () => {
 			},
 			streams_config: JSON.stringify(draftStreams),
 			frequency: cronExpression,
-			advanced_settings: advancedSettings,
+			advanced_settings:
+				enrollment.supported || advancedSettings?.auto_table_enrollment
+					? { ...advancedSettings, auto_table_enrollment: enrollment.draft }
+					: advancedSettings,
 		}
 
 		savedJobsService.upsert(jobData)
