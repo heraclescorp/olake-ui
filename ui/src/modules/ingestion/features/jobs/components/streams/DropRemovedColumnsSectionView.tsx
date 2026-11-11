@@ -26,10 +26,10 @@ const DropRemovedColumnsSectionView = ({
 		<div className="flex items-center justify-between">
 			<div className="flex items-center gap-1">
 				{isDirty && <WarningIcon className="size-4 text-orange-500" />}
-				<label>Drop columns removed from source</label>
+				<label>Remove columns dropped from source</label>
 			</div>
 			<Switch
-				aria-label="Drop columns removed from source"
+				aria-label="Remove columns dropped from source"
 				checked={dropRemovedColumns}
 				onChange={onChange ?? (() => {})}
 				disabled={!enabled}

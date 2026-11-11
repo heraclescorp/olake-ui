@@ -273,7 +273,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 			const requests = await installEnrollmentFixture(page, { format })
 			await page.goto("/jobs/42/edit")
 			const dropSwitch = page.getByRole("switch", {
-				name: "Drop columns removed from source",
+				name: "Remove columns dropped from source",
 				exact: true,
 			})
 			await expect(dropSwitch).toHaveAttribute("aria-checked", "false")
@@ -420,7 +420,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 				.locator(".ant-select")
 				.filter({
 					has: page.getByRole("combobox", {
-						name: "Drop columns removed from source",
+						name: "Remove columns dropped from source",
 						exact: true,
 					}),
 				})
@@ -429,7 +429,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 		await expect(
 			page.getByText(/Save or discard unsaved settings/),
 		).toHaveCount(0)
-		await chooseDefault(page, "Drop columns removed from source", "Enabled")
+		await chooseDefault(page, "Remove columns dropped from source", "Enabled")
 		await saveSettings(page)
 		await expect(page).toHaveURL(/\/jobs$/)
 		expect(
@@ -458,7 +458,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 			.getByRole("button", { name: "Configure Streams", exact: true })
 			.click()
 		const dropSwitch = dialog.getByRole("switch", {
-			name: "Drop columns removed from source",
+			name: "Remove columns dropped from source",
 			exact: true,
 		})
 		await expect(dropSwitch).toHaveAttribute("aria-checked", "false")

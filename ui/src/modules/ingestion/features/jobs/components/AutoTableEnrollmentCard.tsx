@@ -235,7 +235,7 @@ const AutoTableEnrollmentCard = ({
 					}
 				/>
 				<BooleanSetting
-					label="Drop columns removed from source"
+					label="Remove columns dropped from source"
 					description={`${DROP_REMOVED_COLUMNS_HELP_TEXT} Requires Normalization.`}
 					value={draft.defaults.drop_removed_columns ?? false}
 					trueLabel="Enabled"
