@@ -621,48 +621,6 @@ POST, before any operation starts.
   }
   ```
 
-### Automatic Table Enrollment and New-Table Defaults
-
-- Create and update requests accept `advanced_settings.auto_table_enrollment` for PostgreSQL-to-Iceberg jobs:
-
-  ```json
-  {
-    "auto_table_enrollment": {
-      "enabled": true,
-      "schemas": [{"namespace": "public", "destination_database": "warehouse:public"}],
-      "defaults": {
-        "normalization": true,
-        "append_mode": false,
-        "update_type": "pos",
-        "sync_new_columns": true
-      }
-    }
-  }
-  ```
-
-- The UI exposes this policy during job creation, stream editing, and job settings. New policies default
-  to enabled for supported jobs, with normalized upserts, positional deletes when reader-compatible,
-  and new-column syncing. Explicit saved choices, including disabled policies and false booleans,
-  are preserved. These defaults do not rewrite existing selected stream settings or select known
-  excluded tables. API clients must supply the policy explicitly; an omitted policy remains disabled.
-- `schemas` remains part of the worker/API contract but is derived by the UI from existing stream
-  routing. There are no schema-approval checkboxes or destination-database inputs in the enrollment
-  controls. A namespace must already exist in the available catalog. Conflicting destination mappings
-  must be resolved in the stream definitions; the UI must not select an arbitrary stream's mapping.
-- Allowed delete formats come from the current source image's query-engine capability catalog and
-  the job's current target readers, not historical `available_update_types` on saved streams. The
-  selected format must be writable and readable by every selected target engine for upsert mode.
-- Disabling enrollment does not require a valid old schema mapping or a successful capability lookup.
-  Saved defaults and mappings are retained while inactive. An enabled policy still requires explicit
-  valid defaults, supported source/destination types, and existing namespace mappings.
-- `GET` job responses include an opaque `catalog_revision`. Job updates require that fetched token
-  when the stored or submitted policy is enabled. Missing/stale tokens return `409` before cancellation
-  and are checked again at the final write. A settings-only UI save round-trips the stored catalog,
-  source/destination references, and index setting without resetting CDC state.
-- Enrollment is metadata-only before ingestion: only newly discovered, eligible tables in those
-  mapped namespaces are added. The worker durably commits the proposal before normal snapshot/CDC
-  starts. This does not automatically backfill new column defaults or mirror arbitrary source DDL.
-
 ### Get All Jobs
 
 - **Endpoint**: `/api/v1/project/:projectid/jobs`
@@ -1104,58 +1062,6 @@ POST, before any operation starts.
     "message": "string"
   }
   ```
-
-### Resync One Selected Table
----
-
-- **Endpoint**: `/api/v1/project/:projectid/jobs/:id/resync-table`
-- **Method**: POST
-- **Authentication**: existing authenticated `olake-session` cookie (same as the UI).
-- **Request Body** (only these fields are accepted):
-
-  ```json
-  {
-    "namespace": "public",
-    "stream_name": "orders"
-  }
-  ```
-
-- **Description**: Clears and resets exactly one currently selected table using the job's saved
-  catalog, including its destination overrides and source version. Both fields must be nonempty;
-  namespace and table name are matched exactly. No catalog or column-only reset is accepted.
-  Historical data for selected columns requires resyncing the entire table.
-  The job must be active, with neither sync nor clear-destination running. The selected table must
-  use a backfill-capable mode (`cdc`, `full_refresh`, or `incremental`), not `strict_cdc` (CDC only).
-  Legacy and split catalogs are supported. The saved job configuration, other table state, and
-  global CDC/LSN position are preserved; the entire job state is never reset by this operation.
-  After the scoped clear and updated state are successfully persisted, the worker durably triggers
-  a normal full-job sync: the reset table backfills and other streams follow their saved modes and
-  checkpoints; other unfinished backfills or full-refresh streams may also run before CDC catch-up.
-  Scope resolution and request staging hold the same catalog-edit fence used by job edits and worker
-  enrollment, so a concurrent catalog change cannot replace the saved routing midway through reset.
-  The follow-up reloads the complete current job and also runs automatic table enrollment when enabled;
-  newly discovered tables may therefore be enrolled in that full-job sync.
-  This is a destructive table rebuild using the saved schema, not source schema rediscovery or a
-  universal DDL migration. Consumers may observe the table as unavailable while it is rebuilt.
-- **Response**: `200` means the asynchronous resync was accepted, not that it has completed.
-  Uses the normal JSONResponse message with no additional data shape:
-
-  ```json
-  {
-    "success": true,
-    "message": "table resync triggered successfully for job_id[1]"
-  }
-  ```
-
-- **Errors**: `400` for malformed/extra fields, missing or empty identifiers, unknown or unselected
-  tables, or a mode without backfill; `401` for unauthenticated requests; `404` for a missing job or
-  a job outside the requested project; `409` for paused jobs or running sync/clear operations;
-  `500` for storage or workflow failures. Poll the existing clear-destination status and job tasks.
-- **Worker contract**: only this operation sets `start_sync_after_clear: true` on the existing
-  clear-destination execution request. Ordinary clears set it to `false` and do not trigger an
-  immediate follow-up sync. Resync cleanup keeps scheduling paused until a successful, idempotent
-  unpause-and-trigger handoff. Failed or cancelled clears do not enqueue that handoff and leave the
-  schedule paused for operator review/retry.
 
 ### Get Clear Destination Status
 ---
