@@ -2,7 +2,10 @@ import { Alert, Select, Switch } from "antd"
 
 import { UpsertType } from "@/modules/ingestion/common/types"
 
-import { UPSERT_TYPE_OPTIONS } from "../constants"
+import {
+	DROP_REMOVED_COLUMNS_HELP_TEXT,
+	UPSERT_TYPE_OPTIONS,
+} from "../constants"
 import {
 	AutoTableEnrollmentDraft,
 	EnrollmentCatalog,
@@ -228,6 +231,20 @@ const AutoTableEnrollmentCard = ({
 						onChange({
 							...draft,
 							defaults: { ...draft.defaults, sync_new_columns },
+						})
+					}
+				/>
+				<BooleanSetting
+					label="Drop columns removed from source"
+					description={`${DROP_REMOVED_COLUMNS_HELP_TEXT} Requires Normalization.`}
+					value={draft.defaults.drop_removed_columns ?? false}
+					trueLabel="Enabled"
+					falseLabel="Disabled"
+					disabled={controlsDisabled || !draft.defaults.normalization}
+					onChange={(drop_removed_columns): void =>
+						onChange({
+							...draft,
+							defaults: { ...draft.defaults, drop_removed_columns },
 						})
 					}
 				/>

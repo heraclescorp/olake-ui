@@ -23,6 +23,7 @@ export interface BulkStreamConfig {
 	dedupKeys?: string[]
 	upsertType?: UpsertType
 	normalization?: boolean
+	dropRemovedColumns?: boolean
 	partitionRegex?: string
 	filterValue?: string
 	filterConfig?: FilterConfig
@@ -545,6 +546,8 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 						)
 					if (config.normalization !== undefined)
 						newStream.normalization = config.normalization
+					if (config.dropRemovedColumns !== undefined)
+						newStream.drop_removed_columns = config.dropRemovedColumns
 					if (config.partitionRegex !== undefined)
 						newStream.partition_regex = config.partitionRegex
 					if (config.useSourceColumnNames !== undefined)

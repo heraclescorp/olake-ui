@@ -395,7 +395,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 		)
 		await expect(
 			enrollmentPanel(page).getByText("Disabled", { exact: true }),
-		).toHaveCount(2)
+		).toHaveCount(3)
 		await expect(
 			enrollmentPanel(page).getByText("Append", { exact: true }),
 		).toBeVisible()
@@ -405,6 +405,85 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 			requests.updates[0].advanced_settings?.auto_table_enrollment,
 		).toEqual(policy)
 		expectSavedConfigurationPreserved(requests, requests.updates[0])
+	})
+
+	test("a saved policy without drop_removed_columns loads as off and saves it only when chosen", async ({
+		page,
+	}) => {
+		const requests = await installEnrollmentFixture(page, {
+			format: "split",
+			policy: savedEnrollmentPolicy,
+		})
+		await page.goto("/jobs/42/settings")
+		await expect(
+			enrollmentPanel(page)
+				.locator(".ant-select")
+				.filter({
+					has: page.getByRole("combobox", {
+						name: "Drop columns removed from source",
+						exact: true,
+					}),
+				})
+				.locator(".ant-select-selection-item"),
+		).toHaveText("Disabled")
+		await expect(
+			page.getByText(/Save or discard unsaved settings/),
+		).toHaveCount(0)
+		await chooseDefault(page, "Drop columns removed from source", "Enabled")
+		await saveSettings(page)
+		await expect(page).toHaveURL(/\/jobs$/)
+		expect(
+			requests.updates[0].advanced_settings?.auto_table_enrollment,
+		).toEqual({
+			...savedEnrollmentPolicy,
+			schemas: inferredSchemas,
+			defaults: {
+				...savedEnrollmentPolicy.defaults,
+				drop_removed_columns: true,
+			},
+		})
+	})
+
+	test("bulk configure sets drop_removed_columns only on the selected streams", async ({
+		page,
+	}) => {
+		const requests = await installEnrollmentFixture(page, { format: "split" })
+		await page.goto("/jobs/42/edit")
+		await page
+			.getByRole("button", { name: "Bulk Configure", exact: true })
+			.click()
+		const dialog = page.getByRole("dialog")
+		await dialog.getByRole("checkbox", { name: "orders", exact: true }).check()
+		await dialog
+			.getByRole("button", { name: "Configure Streams", exact: true })
+			.click()
+		const dropSwitch = dialog.getByRole("switch", {
+			name: "Drop columns removed from source",
+			exact: true,
+		})
+		await expect(dropSwitch).toHaveAttribute("aria-checked", "false")
+		await expect(dropSwitch).toBeDisabled()
+		await dialog
+			.getByRole("switch", { name: "Normalization", exact: true })
+			.click()
+		await dropSwitch.click()
+		await dialog
+			.getByRole("button", { name: "Review Changes", exact: true })
+			.click()
+		await dialog
+			.getByRole("button", { name: "Apply Changes", exact: true })
+			.click()
+		await expect(dialog).toHaveCount(0, { timeout: 10_000 })
+		await page.getByRole("button", { name: "Finish", exact: true }).click()
+		await expect(page).toHaveURL(/\/jobs$/)
+		const selected = submittedCatalog(requests.updates[0]).selected_streams
+			.public
+		expect(
+			selected.find(stream => stream.stream_name === "orders"),
+		).toMatchObject({ normalization: true, drop_removed_columns: true })
+		expect(
+			selected.find(stream => stream.stream_name === "previously_enrolled"),
+		).not.toHaveProperty("drop_removed_columns")
 	})
 
 	test("explicit empty disabled policy receives settings defaults but never opts in", async ({
@@ -879,7 +958,7 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 		await expect(page).toHaveURL(/\/jobs\/42\/settings$/)
 		await expect(
 			enrollmentPanel(page).getByText("Disabled", { exact: true }),
-		).toHaveCount(2)
+		).toHaveCount(3)
 		await expect(
 			enrollmentPanel(page).getByText("Deletion Vector", { exact: true }),
 		).toBeVisible()

@@ -124,12 +124,14 @@ type AutoTableEnrollmentSchema struct {
 }
 
 // AutoTableEnrollmentDefaults requires all fields when enabled, including explicit
-// false booleans. Upsert delete types must support all target_query_engines.
+// false booleans, except DropRemovedColumns (absent means off). Upsert delete
+// types must support all target_query_engines.
 type AutoTableEnrollmentDefaults struct {
-	Normalization  *bool  `json:"normalization"`
-	AppendMode     *bool  `json:"append_mode"`
-	UpdateType     string `json:"update_type" enums:"eq,pos,dv"`
-	SyncNewColumns *bool  `json:"sync_new_columns"`
+	Normalization      *bool  `json:"normalization"`
+	AppendMode         *bool  `json:"append_mode"`
+	UpdateType         string `json:"update_type" enums:"eq,pos,dv"`
+	SyncNewColumns     *bool  `json:"sync_new_columns"`
+	DropRemovedColumns *bool  `json:"drop_removed_columns,omitempty"`
 }
 
 type JobMetadata struct {
