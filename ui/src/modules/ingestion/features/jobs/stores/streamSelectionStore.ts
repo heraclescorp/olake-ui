@@ -73,6 +73,11 @@ interface StreamSelectionState {
 		normalization: boolean,
 	) => void
 
+	updateDropRemovedColumns: (
+		stream: StreamIdentifier,
+		dropRemovedColumns: boolean,
+	) => void
+
 	updateUseSourceColumnNames: (
 		stream: StreamIdentifier,
 		useSourceColumnNames: boolean,
@@ -267,6 +272,32 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 						...prev.selected_streams,
 						[namespace]: prev.selected_streams[namespace].map(s =>
 							s.stream_name === streamName ? { ...s, normalization } : s,
+						),
+					},
+				},
+			}
+		}),
+
+	updateDropRemovedColumns: (stream, dropRemovedColumns) =>
+		set(state => {
+			if (!state.streamsData) return state
+			const { streamName, namespace } = stream
+
+			const prev = state.streamsData
+			const streamExists = prev.selected_streams[namespace]?.some(
+				s => s.stream_name === streamName,
+			)
+			if (!streamExists) return state
+
+			return {
+				streamsData: {
+					...prev,
+					selected_streams: {
+						...prev.selected_streams,
+						[namespace]: prev.selected_streams[namespace].map(s =>
+							s.stream_name === streamName
+								? { ...s, drop_removed_columns: dropRemovedColumns }
+								: s,
 						),
 					},
 				},

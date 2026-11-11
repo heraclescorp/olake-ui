@@ -262,6 +262,37 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 			expect(
 				selected.some(stream => stream.stream_name === "known_unselected"),
 			).toBe(false)
+			for (const stream of selected) {
+				expect(stream).not.toHaveProperty("drop_removed_columns")
+			}
+		})
+
+		test(`${format}: drop removed columns defaults off and saves on the edited stream only`, async ({
+			page,
+		}) => {
+			const requests = await installEnrollmentFixture(page, { format })
+			await page.goto("/jobs/42/edit")
+			const dropSwitch = page.getByRole("switch", {
+				name: "Drop columns removed from source",
+				exact: true,
+			})
+			await expect(dropSwitch).toHaveAttribute("aria-checked", "false")
+			await expect(dropSwitch).toBeDisabled()
+			await page
+				.getByRole("switch", { name: "Normalization", exact: true })
+				.click()
+			await dropSwitch.click()
+			await expect(dropSwitch).toHaveAttribute("aria-checked", "true")
+			await page.getByRole("button", { name: "Finish", exact: true }).click()
+			await expect(page).toHaveURL(/\/jobs$/)
+			const selected = submittedCatalog(requests.updates[0]).selected_streams
+				.public
+			expect(
+				selected.find(stream => stream.stream_name === "orders"),
+			).toMatchObject({ normalization: true, drop_removed_columns: true })
+			expect(
+				selected.find(stream => stream.stream_name === "previously_enrolled"),
+			).not.toHaveProperty("drop_removed_columns")
 		})
 
 		test(`${format}: selecting a known unselected table uses new-table defaults and preserves explicit and sparse saved choices`, async ({
@@ -287,14 +318,12 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 				page.getByRole("radio", { name: "Upsert", exact: true }),
 			).toBeChecked()
 			await expect(
-				page
-					.locator(".ant-select")
-					.filter({
-						has: page.getByRole("combobox", {
-							name: "Upsert Type",
-							exact: true,
-						}),
+				page.locator(".ant-select").filter({
+					has: page.getByRole("combobox", {
+						name: "Upsert Type",
+						exact: true,
 					}),
+				}),
 			).toContainText("Positional Deletes")
 			await page.getByRole("button", { name: "Finish", exact: true }).click()
 			await page
