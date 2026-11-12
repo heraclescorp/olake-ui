@@ -66,3 +66,16 @@ func TestResyncChecksClearOperationWithSameJobScope(t *testing.T) {
 		}
 	}
 }
+
+func TestResyncChecksDedicatedOperationWithSameJobScope(t *testing.T) {
+	fake := &runningResyncWorkflowClient{running: true}
+	err := ensureNoResync(context.Background(), &temporal.Temporal{Client: fake}, "project-a", 17)
+	if !errors.Is(err, constants.ErrJobBusy) || len(fake.requests) != 1 {
+		t.Fatalf("running resync was not rejected: %v", err)
+	}
+	for _, required := range []string{"sync-project-a-17-", "OperationType = 'resync'", "ExecutionStatus = 'Running'"} {
+		if !strings.Contains(fake.requests[0].Query, required) {
+			t.Fatalf("resync check is not job scoped: %s", fake.requests[0].Query)
+		}
+	}
+}

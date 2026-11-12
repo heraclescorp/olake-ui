@@ -9,6 +9,7 @@ import (
 
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 	"github.com/datazip-inc/olake-ui/server/internal/models"
+	"github.com/datazip-inc/olake-ui/server/internal/models/dto"
 	"github.com/datazip-inc/olake-ui/server/internal/storage"
 	"github.com/datazip-inc/olake-ui/server/internal/types"
 	"go.temporal.io/sdk/client"
@@ -47,10 +48,23 @@ func buildExecutionReqForSync(job *models.Job, workflowID string) *ExecutionRequ
 	}
 }
 
+func buildExecutionReqForResync(job *models.Job, workflowID string, target dto.ResyncTableRequest) *ExecutionRequest {
+	req := buildExecutionReqForSync(job, workflowID)
+	req.Command = Resync
+	req.Args[0] = string(Resync)
+	req.Args = append(req.Args,
+		"--resync-namespace", target.Namespace,
+		"--resync-table", target.StreamName,
+		"--resync-id", workflowID,
+	)
+	req.Timeout = GetWorkflowTimeout(Resync)
+	return req
+}
+
 // buildExecutionReqForClearDestination builds the ExecutionRequest for a clear-destination job.
 // diff is the stream difference to clear, staged in the format it is given in; empty clears the
 // job's whole stored catalog.
-func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, workflowID string, diff types.StreamsCatalog, startSyncAfterClear bool) (*ExecutionRequest, error) {
+func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, workflowID string, diff types.StreamsCatalog) (*ExecutionRequest, error) {
 	streamsDir := fmt.Sprintf("%s-%d", workflowID, time.Now().Unix())
 
 	catalog := diff
@@ -90,18 +104,17 @@ func buildExecutionReqForClearDestination(ctx context.Context, job *models.Job, 
 	args = append(args, catalogArgs...)
 
 	return &ExecutionRequest{
-		Command:             ClearDestination,
-		ConnectorType:       job.Source.Type,
-		Version:             job.Source.Version,
-		Args:                args,
-		Configs:             nil,
-		WorkflowID:          workflowID,
-		ProjectID:           job.ProjectID,
-		JobID:               job.ID,
-		Timeout:             GetWorkflowTimeout(ClearDestination),
-		OutputFile:          "state.json",
-		TempPath:            tempPath,
-		StartSyncAfterClear: startSyncAfterClear,
+		Command:       ClearDestination,
+		ConnectorType: job.Source.Type,
+		Version:       job.Source.Version,
+		Args:          args,
+		Configs:       nil,
+		WorkflowID:    workflowID,
+		ProjectID:     job.ProjectID,
+		JobID:         job.ID,
+		Timeout:       GetWorkflowTimeout(ClearDestination),
+		OutputFile:    "state.json",
+		TempPath:      tempPath,
 	}, nil
 }
 
@@ -137,7 +150,7 @@ func GetWorkflowTimeout(op Command) time.Duration {
 		return time.Minute * 10
 	case Spec:
 		return time.Minute * 5
-	case Sync:
+	case Sync, Resync:
 		return time.Hour * 24 * 30
 	case ClearDestination:
 		return time.Hour * 24 * 30

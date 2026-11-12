@@ -10,9 +10,12 @@ interface ResyncFixture {
 	format?: CatalogFormat
 	paused?: boolean
 	running?: boolean
+	resyncing?: boolean
 	clearing?: boolean
 	reject?: boolean
 	invalidCatalog?: boolean
+	unsupportedSource?: boolean
+	unsupportedDestination?: boolean
 }
 
 interface FixtureRequests {
@@ -72,20 +75,20 @@ const installResyncFixture = async (
 		name: "Fixture CDC job",
 		source: {
 			name: "Fixture PostgreSQL",
-			type: "postgres",
+			type: options.unsupportedSource ? "mysql" : "postgres",
 			version: "v0.8.2",
 			config: "{}",
 		},
 		destination: {
 			name: "Fixture Iceberg",
-			type: "iceberg",
+			type: options.unsupportedDestination ? "parquet" : "iceberg",
 			version: "v0.8.2",
 			config: "{}",
 		},
 		frequency: "* * * * *",
 		catalog_revision: "a1".repeat(32),
-		last_run_type: JobType.Sync,
-		last_run_state: options.running ? "running" : "completed",
+		last_run_type: options.resyncing ? JobType.Resync : JobType.Sync,
+		last_run_state: options.running || options.resyncing ? "running" : "completed",
 		last_run_time: "2026-11-01T00:00:00Z",
 		created_at: "2026-11-01T00:00:00Z",
 		updated_at: "2026-11-01T00:00:00Z",
@@ -140,7 +143,7 @@ const installResyncFixture = async (
 					json: {
 						message: options.reject
 							? "Job is already running"
-							: "Table resync started",
+							: "Table rebuild started; existing data remains readable until atomic publication",
 						data: null,
 					},
 				})
@@ -220,20 +223,15 @@ test.describe("Table resync (intercepted APIs only)", () => {
 					? "warehouse_override/orders_selected"
 					: "analytics_public/orders_catalog",
 			)
-			await expect(dialog).toContainText(
-				"destination data, index, and backfill progress",
-			)
-			await expect(dialog).toContainText("global LSN / CDC position")
-			await expect(dialog).toContainText("CDC for the whole job waits")
-			await expect(dialog).toContainText("starts automatically")
-			await expect(dialog).toContainText(
-				"Other streams retain their state and follow their configured sync modes",
-			)
-			await expect(dialog).toContainText(
-				"unfinished backfills or full-refresh streams may also run",
-			)
-			await expect(dialog).toContainText("CDC catch-up follows")
-			await expect(dialog).not.toContainText("only this table is backfilled")
+			await expect(dialog).toContainText("Existing data remains readable until atomic publication")
+			await expect(dialog).toContainText("existing table identity")
+			await expect(dialog).toContainText("failure before publication leaves the old data intact")
+			await expect(dialog).toContainText("full saved catalog and state")
+			await expect(dialog).toContainText("checkpoints and ordinary CDC behavior")
+			await expect(dialog).toContainText("Snowflake see the replacement after their usual refresh")
+			await expect(dialog).toContainText("limited to 12 hours")
+			await expect(dialog).not.toContainText("will be cleared")
+			await expect(dialog).not.toContainText("Clear and resync")
 			await expect(dialog).toContainText(
 				"Column-only historical backfill is unsupported",
 			)
@@ -243,7 +241,7 @@ test.describe("Table resync (intercepted APIs only)", () => {
 				.getByRole("button", { name: "Resync table", exact: true })
 				.click()
 			await dialog
-				.getByRole("button", { name: "Clear and resync table", exact: true })
+				.getByRole("button", { name: "Start table rebuild", exact: true })
 				.click()
 			await expect(page).toHaveURL(/\/jobs\/42\/history$/)
 			expect(requests.resyncBodies).toEqual([
@@ -263,6 +261,11 @@ test.describe("Table resync (intercepted APIs only)", () => {
 			reason: "Wait for the running sync",
 		},
 		{
+			name: "resyncing",
+			options: { resyncing: true },
+			reason: "Wait for the running sync",
+		},
+		{
 			name: "paused",
 			options: { paused: true },
 			reason: "Resume this paused job",
@@ -276,6 +279,16 @@ test.describe("Table resync (intercepted APIs only)", () => {
 			name: "invalid catalog",
 			options: { invalidCatalog: true },
 			reason: "Saved table configuration could not be read",
+		},
+		{
+			name: "unsupported source",
+			options: { unsupportedSource: true },
+			reason: "Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
+		},
+		{
+			name: "unsupported destination",
+			options: { unsupportedDestination: true },
+			reason: "Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
 		},
 	]) {
 		test(`blocks resync for ${scenario.name}`, async ({ page }) => {
@@ -330,7 +343,7 @@ test.describe("Table resync (intercepted APIs only)", () => {
 			.getByRole("button", { name: "Resync table", exact: true })
 			.click()
 		await page
-			.getByRole("button", { name: "Clear and resync table", exact: true })
+			.getByRole("button", { name: "Start table rebuild", exact: true })
 			.click()
 		await expect(
 			page.getByText("Job is already running", { exact: true }),

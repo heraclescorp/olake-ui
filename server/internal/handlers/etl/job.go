@@ -378,7 +378,7 @@ func (h *Handler) ClearDestination(c *gin.Context) {
 		return
 	}
 	logger.Debugf("Clear destination initiated project_id[%s] job_id[%d]", projectID, id)
-	if err := h.etl.ClearDestination(c.Request.Context(), projectID, id, types.StreamsCatalog{}, 0, true, false); err != nil {
+	if err := h.etl.ClearDestination(c.Request.Context(), projectID, id, types.StreamsCatalog{}, 0, true); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, constants.ErrJobNotFound) {
 			status = http.StatusNotFound
@@ -692,7 +692,7 @@ func (h *Handler) UpdateStateFile(c *gin.Context) {
 		return
 	}
 	logger.Debugf("Update state file callback initiated job_id[%d]", jobID)
-	if err := h.etl.UpdateStateFile(jobID, req.StateFile); err != nil {
+	if err := h.etl.UpdateStateFile(c.Request.Context(), jobID, req.StateFile); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, constants.ErrJobNotFound) {
 			status = http.StatusNotFound

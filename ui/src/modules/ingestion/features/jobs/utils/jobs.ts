@@ -33,6 +33,8 @@ export const getJobTypeClass = (jobType: JobType) => {
 			return "text-[#52C41A] bg-[#F6FFED]"
 		case JobType.ClearDestination:
 			return "text-amber-700 bg-amber-50"
+		case JobType.Resync:
+			return "text-blue-700 bg-blue-50"
 		default:
 			return "text-[rgba(0,0,0,88)] bg-transparent"
 	}
@@ -44,6 +46,8 @@ export const getJobTypeLabel = (lastRunType: JobType) => {
 			return "Sync"
 		case JobType.ClearDestination:
 			return "Clear Destination"
+		case JobType.Resync:
+			return "Table Resync"
 		default:
 			return lastRunType
 	}

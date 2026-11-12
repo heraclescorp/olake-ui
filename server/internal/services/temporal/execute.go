@@ -14,6 +14,7 @@ import (
 	"github.com/datazip-inc/olake-ui/server/internal/appconfig"
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 	"github.com/datazip-inc/olake-ui/server/internal/models"
+	"github.com/datazip-inc/olake-ui/server/internal/models/dto"
 	"github.com/datazip-inc/olake-ui/server/internal/storage"
 	"github.com/datazip-inc/olake-ui/server/internal/types"
 	"github.com/datazip-inc/olake-ui/server/internal/utils"
@@ -34,8 +35,7 @@ type ExecutionRequest struct {
 	Timeout       time.Duration `json:"timeout"`
 	OutputFile    string        `json:"output_file"` // to get the output file from the workflow
 
-	TempPath            string `json:"temp_path"`
-	StartSyncAfterClear bool   `json:"start_sync_after_clear"`
+	TempPath string `json:"temp_path"`
 }
 
 type JobConfig struct {
@@ -51,6 +51,7 @@ const (
 	Sync             Command = "sync"
 	Spec             Command = "spec"
 	ClearDestination Command = "clear-destination"
+	Resync           Command = "resync"
 
 	RunSyncWorkflow = "RunSyncWorkflow"
 	ExecuteWorkflow = "ExecuteWorkflow"
@@ -375,7 +376,7 @@ func DecodeConnectionStatus(result map[string]interface{}) (map[string]interface
 	return response, nil
 }
 
-func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff types.StreamsCatalog, startSyncAfterClear bool) error {
+func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff types.StreamsCatalog) error {
 	workflowID, scheduleID := t.WorkflowAndScheduleID(job.ProjectID, job.ID)
 
 	// update the sync schedule to use clear-destination request
@@ -385,7 +386,7 @@ func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff t
 	}
 
 	// update schedule to use clear-destination request
-	clearReq, err := buildExecutionReqForClearDestination(ctx, job, workflowID, diff, startSyncAfterClear)
+	clearReq, err := buildExecutionReqForClearDestination(ctx, job, workflowID, diff)
 	if err != nil {
 		return fmt.Errorf("failed to build execution request for clear-destination: %s", err)
 	}
@@ -402,6 +403,24 @@ func (t *Temporal) ClearDestination(ctx context.Context, job *models.Job, diff t
 			return fmt.Errorf("trigger clear destination workflow failed: %s, revert to sync failed: %s", err, uerr)
 		}
 		return fmt.Errorf("failed to trigger clear destination workflow: %s", err)
+	}
+	return nil
+}
+
+func (t *Temporal) ResyncTable(ctx context.Context, job *models.Job, target dto.ResyncTableRequest) error {
+	baseID, _ := t.WorkflowAndScheduleID(job.ProjectID, job.ID)
+	operationID, err := NewOperationID(OperationResync, job.ProjectID)
+	if err != nil {
+		return err
+	}
+	workflowID := baseID + "-" + operationID
+	req := buildExecutionReqForResync(job, workflowID, target)
+	_, err = t.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        workflowID,
+		TaskQueue: t.taskQueue,
+	}, RunSyncWorkflow, req)
+	if err != nil {
+		return fmt.Errorf("table resync %s start was not confirmed: %w; schedule remains paused for reconciliation", workflowID, err)
 	}
 	return nil
 }

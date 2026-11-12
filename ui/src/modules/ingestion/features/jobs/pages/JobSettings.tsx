@@ -372,7 +372,7 @@ const JobSettings: React.FC = () => {
 			? "Unable to check whether a destination clear is running. Try again when status is available."
 			: selectedClearDestinationRunning ||
 				  job.last_run_state?.toLowerCase() === "running"
-				? "Wait for the running sync or destination clear to finish before resyncing a table."
+				? "Wait for the running sync, table resync, or destination clear to finish before resyncing a table."
 				: !job.activate
 					? "Resume this paused job before resyncing a table."
 					: hasUnsavedSettings

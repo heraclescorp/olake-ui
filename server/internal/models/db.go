@@ -93,6 +93,7 @@ type Job struct {
 	AvailableStreamsConfig *string `json:"available_streams_config" gorm:"column:available_streams_config;type:jsonb"`
 	SelectedStreamsConfig  *string `json:"selected_streams_config" gorm:"column:selected_streams_config;type:jsonb"`
 	State                  string  `json:"state" gorm:"column:state;type:jsonb"`
+	ExecutionWorkflowID    *string `json:"-" gorm:"column:execution_workflow_id;type:text"`
 	AdvancedSettings       *string `json:"advanced_settings" gorm:"column:advanced_settings;type:jsonb"`
 	CreatedByID            int     `json:"-" gorm:"column:created_by_id"`
 	UpdatedByID            int     `json:"-" gorm:"column:updated_by_id"`

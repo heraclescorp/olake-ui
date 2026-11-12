@@ -199,6 +199,7 @@ export interface JobConfigurationProps {
 export enum JobType {
 	Sync = "sync",
 	ClearDestination = "clear",
+	Resync = "resync",
 }
 
 export interface CronParseResult {

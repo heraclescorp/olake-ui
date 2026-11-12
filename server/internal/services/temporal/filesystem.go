@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	AsyncCommands = []Command{Sync, ClearDestination}
+	AsyncCommands = []Command{Sync, ClearDestination, Resync}
 )
 
 // GetWorkflowDirectory determines the directory name based on operation and workflow ID

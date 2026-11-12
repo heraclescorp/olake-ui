@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -298,4 +299,165 @@ func TestCatalogRevisionEditFenceDoesNotBlockCancellationStateWrites(t *testing.
 		t.Fatalf("released edit fence leaked its lock: %v", err)
 	}
 	nextRelease()
+}
+
+func TestCatalogEditFenceReentrancyIsBoundToDatabaseAndJob(t *testing.T) {
+	db := enrollmentTestDatabase(t)
+	job := savedEnrollmentJob(t, db, true, false)
+	ctx, release, err := db.BeginCatalogEdit(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	nested, borrowedRelease, err := db.BeginCatalogEdit(ctx, job.ID)
+	if err != nil || nested != ctx {
+		t.Fatalf("same-job nested edit did not borrow its fence: %v", err)
+	}
+	borrowedRelease()
+	if _, otherRelease, err := db.BeginCatalogEdit(context.Background(), job.ID); !errors.Is(err, constants.ErrJobBusy) {
+		if otherRelease != nil {
+			otherRelease()
+		}
+		t.Fatalf("borrowed release unlocked the outer edit: %v", err)
+	}
+	otherDB := &Database{conn: db.conn}
+	if _, otherRelease, err := otherDB.BeginCatalogEdit(ctx, job.ID); !errors.Is(err, constants.ErrJobBusy) {
+		if otherRelease != nil {
+			otherRelease()
+		}
+		t.Fatalf("another Database instance borrowed the fence: %v", err)
+	}
+	otherContext, otherRelease, err := db.BeginCatalogEdit(ctx, job.ID+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherRelease()
+	if otherContext == ctx {
+		t.Fatal("another job borrowed the fence")
+	}
+	if _, competingRelease, err := db.BeginCatalogEdit(context.Background(), job.ID+1); !errors.Is(err, constants.ErrJobBusy) {
+		if competingRelease != nil {
+			competingRelease()
+		}
+		t.Fatalf("other job did not acquire its own real fence: %v", err)
+	}
+	otherRelease()
+	release()
+	if _, staleRelease, err := db.BeginCatalogEdit(ctx, job.ID); !errors.Is(err, context.Canceled) {
+		if staleRelease != nil {
+			staleRelease()
+		}
+		t.Fatalf("released context borrowed stale ownership: %v", err)
+	}
+	_, nextRelease, err := db.BeginCatalogEdit(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("outer release leaked the PostgreSQL fence: %v", err)
+	}
+	nextRelease()
+}
+
+func TestCatalogEditFenceSerializesMutationBeforeWorkerOwnership(t *testing.T) {
+	db := enrollmentTestDatabase(t)
+	job := savedEnrollmentJob(t, db, true, false)
+	ctx, release, err := db.BeginCatalogEdit(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	workerContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pidReady := make(chan int, 1)
+	finished := make(chan error, 1)
+	go func() {
+		finished <- db.conn.WithContext(workerContext).Transaction(func(tx *gorm.DB) error {
+			var pid int
+			if err := tx.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+				return err
+			}
+			pidReady <- pid
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", fmt.Sprintf("olake:catalog-edit:%d", job.ID)).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&models.Job{}).Where("id = ? AND execution_workflow_id IS NULL", job.ID).Update("execution_workflow_id", "resync-worker")
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("worker ownership was not acquired")
+			}
+			return nil
+		})
+	}()
+	var pid int
+	select {
+	case pid = <-pidReady:
+	case err := <-finished:
+		t.Fatalf("worker could not begin: %v", err)
+	case <-workerContext.Done():
+		t.Fatal(workerContext.Err())
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := db.conn.Raw("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = ? AND locktype = 'advisory' AND NOT granted)", pid).Scan(&waiting).Error; err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-finished:
+			t.Fatalf("worker bypassed API fence: %v", err)
+		case <-workerContext.Done():
+			t.Fatal("worker never waited for API fence")
+		case <-ticker.C:
+		}
+	}
+	nested, nestedRelease, err := db.BeginCatalogEdit(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nestedRelease()
+	newState := `{"global":{"lsn":"0/DEF"}}`
+	if err := db.conn.WithContext(nested).Model(&models.Job{}).Where("id = ? AND execution_workflow_id IS NULL", job.ID).Update("state", newState).Error; err != nil {
+		t.Fatal(err)
+	}
+	nestedRelease()
+	select {
+	case err := <-finished:
+		t.Fatalf("nested release unlocked outer fence: %v", err)
+	default:
+	}
+	release()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-workerContext.Done():
+		t.Fatal("worker remained blocked after API release")
+	}
+	var fresh models.Job
+	if err := db.conn.First(&fresh, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ExecutionWorkflowID == nil || *fresh.ExecutionWorkflowID != "resync-worker" {
+		t.Fatal("worker claim missing")
+	}
+	var actual, expected interface{}
+	if err := json.Unmarshal([]byte(fresh.State), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(newState), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatal("worker claim raced past the protected state mutation")
+	}
+	_, afterClaimRelease, err := db.BeginCatalogEdit(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("worker leaked its transaction fence: %v", err)
+	}
+	afterClaimRelease()
 }

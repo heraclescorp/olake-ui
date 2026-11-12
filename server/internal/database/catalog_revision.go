@@ -14,7 +14,19 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+type catalogEditContextKey struct {
+	database *Database
+	jobID    int
+}
+
 func (db *Database) BeginCatalogEdit(ctx context.Context, jobID int) (context.Context, func(), error) {
+	key := catalogEditContextKey{database: db, jobID: jobID}
+	if ctx.Value(key) != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		return ctx, func() {}, nil
+	}
 	fenceContext, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	dialector, ok := db.conn.Dialector.(*postgres.Dialector)
 	if !ok || dialector.DSN == "" {
@@ -51,7 +63,7 @@ func (db *Database) BeginCatalogEdit(ctx context.Context, jobID int) (context.Co
 		release()
 		return nil, nil, fmt.Errorf("%w: settings are already being edited", constants.ErrJobBusy)
 	}
-	return fenceContext, release, nil
+	return context.WithValue(fenceContext, key, true), release, nil
 }
 
 func (db *Database) CheckCatalogRevision(ctx context.Context, jobID int, projectID, revision string, required bool) error {

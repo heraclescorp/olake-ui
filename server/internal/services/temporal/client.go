@@ -152,6 +152,21 @@ func (t *Temporal) ResumeSchedule(ctx context.Context, projectID string, jobID i
 	})
 }
 
+func (t *Temporal) RequireUnpausedSchedule(ctx context.Context, projectID string, jobID int) error {
+	_, scheduleID := t.WorkflowAndScheduleID(projectID, jobID)
+	description, err := t.Client.ScheduleClient().GetHandle(ctx, scheduleID).Describe(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to inspect schedule: %w", err)
+	}
+	if description.Schedule.State == nil {
+		return fmt.Errorf("schedule pause state is unavailable")
+	}
+	if description.Schedule.State.Paused {
+		return fmt.Errorf("%w: schedule is paused; reconcile any pending table resync before resuming", constants.ErrJobBusy)
+	}
+	return nil
+}
+
 func (t *Temporal) DeleteSchedule(ctx context.Context, projectID string, jobID int) error {
 	_, scheduleID := t.WorkflowAndScheduleID(projectID, jobID)
 	return t.Client.ScheduleClient().GetHandle(ctx, scheduleID).Delete(ctx)

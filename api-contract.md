@@ -31,6 +31,51 @@ The payload documented for those endpoints below is the operation result.
 Request validation (for example the catalog format of a stream difference) still fails on the
 POST, before any operation starts.
 
+## Uninterrupted table resync
+
+`POST /api/v1/project/:projectid/jobs/:id/resync-table` accepts only
+`{"namespace":"public","stream_name":"orders"}` from the saved selected catalog.
+The saved source must be PostgreSQL and the saved destination must be Iceberg.
+Other source/destination types are rejected before schedule changes or workflow start;
+Clear Destination remains available as a separate explicitly destructive operation.
+The job must be unpaused, idle, and use a backfill-capable mode. Successful acceptance
+returns the usual `200` response with null data; it does not mean publication has finished.
+History identifies the operation as `resync`, separate from destructive Clear Destination.
+
+The worker reloads the full saved source, destination, catalog, and state, then runs
+`resync` with `--resync-namespace`, `--resync-table`, and a stable workflow ID as
+`--resync-id`. It never routes through `clear-destination` or resets saved state first.
+Unsupported connector/runtime, destination, or schema transitions fail without a
+destructive fallback. Deploy the matching worker and connector before using this endpoint.
+Configured PostgreSQL `backfill_host` readers remain supported. Only the resync snapshot
+uses the writer connection and its exported snapshot; saved source configuration is not changed.
+
+The previous committed snapshot remains readable during rebuild and CDC catch-up.
+Successful publication replaces the snapshot atomically on the same table UUID/name/location;
+it is not a rename swap. Readers such as Snowflake observe it after their normal refresh.
+Existing timestamp-default schema compatibility limits still apply. Each staging attempt
+has a 12-hour safety bound; longer attempts fail rather than risk staging-file expiration.
+
+Pre-publication failure retains the old committed data. Once published, checkpoint
+persistence and an ambiguous acknowledgement require reconciliation, not rollback.
+The schedule remains paused on failure or an uncertain start/publication/cleanup outcome;
+only confirmed publication and successful state persistence allow ordinary sync to resume.
+The internal nullable `execution_workflow_id` job column fences worker execution and
+is intentionally excluded from API payloads. Do not clear a retained fence until the
+previous connector is stopped and publication/checkpoint disposition is reconciled.
+Job mutations hold the existing catalog-edit advisory fence from the owner check through
+the mutation; worker ownership claims take the same fence before loading full inputs.
+Nested same-job edits reuse their outer fence. Worker state persistence and ownership release
+remain unfenced so cancelled executions can finish cleanup while an edit waits for them.
+
+Before deploying the new worker, drain old table-resync clear/handoff workflows. The
+obsolete clear-to-sync handoff flag/activity is removed; ordinary clear/sync histories
+with the old flag false retain their normal path. Deploy the UI database migration before
+the worker ownership checks. Do not repoint or change a shared source/destination during
+an active resync: cross-entity editing is an existing separate concern, and this change
+does not add shared-connector configuration locks.
+
+
 ## Authentication
 
 ### Login
