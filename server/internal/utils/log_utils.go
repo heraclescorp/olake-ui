@@ -3,6 +3,7 @@ package utils
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,14 +36,16 @@ func ReadLogs(ctx context.Context, logDir string, cursor int64, limit int, direc
 	}
 }
 
-// GetLogArchiveFilename generates the filename for the log archive download.
-func GetLogArchiveFilename(ctx context.Context, jobID int, filePath string) (string, error) {
-	baseDir, err := GetAndValidateLogBaseDir(ctx, filePath)
+// GetLogArchiveFilename names an archive from the already-resolved execution.
+func GetLogArchiveFilename(ctx context.Context, jobID int, baseDir string, execution *ExecutionRuntimeLogIdentity) (string, error) {
+	connectorDir, _, err := ResolveExecutionRuntimeLogDirs(baseDir, execution)
 	if err != nil {
 		return "", err
 	}
-
-	syncFolder, err := GetAndValidateSyncFolder(ctx, baseDir)
+	if connectorDir == "" {
+		return "", constants.ErrSyncFolderNotFound
+	}
+	syncFolder, err := GetAndValidateSyncFolder(ctx, connectorDir)
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +55,16 @@ func GetLogArchiveFilename(ctx context.Context, jobID int, filePath string) (str
 }
 
 // GetAndValidateLogBaseDir returns the log base path for the active storage mode.
-func GetAndValidateLogBaseDir(ctx context.Context, workflowID string) (string, error) {
+func GetAndValidateLogBaseDir(ctx context.Context, workflowID string, execution *ExecutionRuntimeLogIdentity) (string, error) {
+	// A recorded execution may have connector logs before the first stable
+	// worker-log flush. Its SQL authority does not depend on a mutable pointer
+	// or even an existing stable workflow prefix.
+	if execution != nil {
+		if storage.Mode() == constants.StorageModeS3 {
+			return WorkflowHash(workflowID), nil
+		}
+		return filepath.Join(constants.DefaultConfigDir, WorkflowHash(workflowID)), nil
+	}
 	switch storage.Mode() {
 	case constants.StorageModeS3:
 		return GetAndValidateS3LogBaseDir(ctx, workflowID)
@@ -70,6 +82,32 @@ func GetAndValidateSyncFolder(ctx context.Context, baseDir string) (string, erro
 		_, syncFolderName, err := GetAndValidateFilesystemSyncDir(baseDir)
 		return syncFolderName, err
 	}
+}
+
+// ExecutionRuntimeLogIdentity is a snapshot selected from the execution record
+// scoped to the requested job and workflow. Nil means no record (legacy layout).
+type ExecutionRuntimeLogIdentity struct {
+	RuntimeID string
+	LaunchID  string
+}
+
+// ResolveExecutionRuntimeLogDirs never reads a mutable runtime pointer. A late
+// storage Put must not choose which admitted generation the API displays.
+func ResolveExecutionRuntimeLogDirs(baseDir string, execution *ExecutionRuntimeLogIdentity) (string, string, error) {
+	if execution == nil {
+		return baseDir, baseDir, nil
+	}
+	if execution.RuntimeID == "" && execution.LaunchID == "" {
+		// Admission has not launched a connector. Show stable worker logs only,
+		// never a stale connector directory or a pointer-based fallback.
+		return "", "", nil
+	}
+	if strings.TrimSpace(execution.RuntimeID) == "" || strings.TrimSpace(execution.LaunchID) == "" {
+		return "", "", fmt.Errorf("invalid execution record runtime identity")
+	}
+	artifactRoot := filepath.Dir(baseDir)
+	return filepath.Join(artifactRoot, fmt.Sprintf("%x", sha256.Sum256([]byte(execution.RuntimeID)))),
+		filepath.Join(artifactRoot, fmt.Sprintf("%x", sha256.Sum256([]byte(execution.LaunchID)))), nil
 }
 
 // parseValidLogLine parses a line and reports whether it is a valid, non-debug log entry.
@@ -122,14 +160,34 @@ func logMessageString(raw json.RawMessage) string {
 	return string(msgBytes)
 }
 
-// AddFilesToArchive adds state.json and the logs/ tree to the tar archive for the active storage mode.
-func AddFilesToArchive(ctx context.Context, baseDir string, tarWriter *tar.Writer) error {
-	switch storage.Mode() {
-	case constants.StorageModeS3:
-		return addS3FilesToArchive(ctx, baseDir, tarWriter)
-	default:
-		return addFilesystemFilesToArchive(baseDir, tarWriter)
+// AddFilesToArchive includes current connector artifacts, stable worker logs,
+// and the original admitted launch when recovery uses a different runtime.
+func AddFilesToArchive(ctx context.Context, baseDir string, execution *ExecutionRuntimeLogIdentity, tarWriter *tar.Writer) error {
+	currentDir, launchDir, err := ResolveExecutionRuntimeLogDirs(baseDir, execution)
+	if err != nil {
+		return err
 	}
+	if currentDir == "" {
+		return constants.ErrSyncFolderNotFound
+	}
+	addDirectory := func(dir, prefix string) error {
+		if storage.Mode() == constants.StorageModeS3 {
+			return addS3FilesToArchive(ctx, dir, prefix, tarWriter)
+		}
+		return addFilesystemFilesToArchive(dir, prefix, tarWriter)
+	}
+	if err := addDirectory(currentDir, ""); err != nil {
+		return err
+	}
+	if currentDir != baseDir {
+		if err := addDirectory(baseDir, "workflow"); err != nil {
+			return err
+		}
+	}
+	if launchDir != currentDir {
+		return addDirectory(launchDir, "launch")
+	}
+	return nil
 }
 
 func writeToArchive(tarWriter *tar.Writer, header *tar.Header, reader io.Reader) (int64, error) {

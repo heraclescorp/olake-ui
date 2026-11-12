@@ -82,7 +82,7 @@ func enrollmentTestDatabase(t *testing.T) *Database {
 			t.Error(err)
 		}
 	})
-	if err := conn.AutoMigrate(&models.Job{}); err != nil {
+	if err := conn.AutoMigrate(&models.Job{}, &models.JobExecutionRecord{}); err != nil {
 		t.Fatal(err)
 	}
 	return &Database{conn: conn}
@@ -138,7 +138,7 @@ func TestCatalogRevisionRechecksAfterWorkerEnrollmentWithoutResettingState(t *te
 			field = "selected_streams_config"
 			proposal = `{"selected_streams":{"public":[{"stream_name":"orders"},{"stream_name":"new_table"}]}}`
 		}
-		if err := db.UpdateJob(job.ID, map[string]any{field: proposal}); err != nil {
+		if err := db.UpdateJob(ctx, job.ID, map[string]any{field: proposal}); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.UpdateJobWithCatalogRevision(ctx, job.ID, job.ProjectID, revision, true, map[string]any{field: job.StreamsConfig, "name": "stale edit"}); !errors.Is(err, constants.ErrCatalogRevision) {
@@ -186,7 +186,7 @@ func TestCatalogRevisionOptOutAndEnableTransitions(t *testing.T) {
 	}
 	// Even a caller that initially observed an off job must not overwrite a
 	// concurrently enabled job without a revision at the final locked write.
-	if err := db.UpdateJob(job.ID, map[string]any{"advanced_settings": `{"auto_table_enrollment":{"enabled":true}}`}); err != nil {
+	if err := db.UpdateJob(ctx, job.ID, map[string]any{"advanced_settings": `{"auto_table_enrollment":{"enabled":true}}`}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpdateJobWithCatalogRevision(ctx, job.ID, job.ProjectID, "", false, map[string]any{"name": "unsafe edit"}); !errors.Is(err, constants.ErrCatalogRevision) {
@@ -460,4 +460,234 @@ func TestCatalogEditFenceSerializesMutationBeforeWorkerOwnership(t *testing.T) {
 		t.Fatalf("worker leaked its transaction fence: %v", err)
 	}
 	afterClaimRelease()
+}
+
+func TestCancelledCatalogEditCannotWriteAfterWorkerClaims(t *testing.T) {
+	db := enrollmentTestDatabase(t)
+	for _, mutation := range []struct {
+		name  string
+		apply func(context.Context, *models.Job) error
+	}{
+		{name: "state", apply: func(ctx context.Context, job *models.Job) error {
+			return db.UpdateJob(ctx, job.ID, map[string]any{"state": `{"stale":true}`})
+		}},
+		{name: "activation", apply: func(ctx context.Context, job *models.Job) error {
+			return db.UpdateJob(ctx, job.ID, map[string]any{"active": false})
+		}},
+		{name: "config", apply: func(ctx context.Context, job *models.Job) error {
+			return db.UpdateJobWithCatalogRevision(ctx, job.ID, job.ProjectID, "", false, map[string]any{"name": "stale config", "selected_streams_config": `{"selected_streams":{}}`})
+		}},
+		{name: "delete", apply: func(ctx context.Context, job *models.Job) error {
+			return db.DeleteJob(ctx, job.ID)
+		}},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			job := savedEnrollmentJob(t, db, true, false)
+			requestContext, cancelRequest := context.WithCancel(context.Background())
+			defer cancelRequest()
+			fencedContext, release, err := db.BeginCatalogEdit(requestContext, job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			var idleSnapshot models.Job
+			if err := db.conn.First(&idleSnapshot, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if idleSnapshot.ExecutionWorkflowID != nil || idleSnapshot.ExecutionRunID != nil {
+				t.Fatal("request did not observe an idle job")
+			}
+			workerContext, cancelWorker := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelWorker()
+			pidReady := make(chan int, 1)
+			claimed := make(chan error, 1)
+			go func() {
+				claimed <- db.conn.WithContext(workerContext).Transaction(func(tx *gorm.DB) error {
+					var pid int
+					if err := tx.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+						return err
+					}
+					pidReady <- pid
+					if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", fmt.Sprintf("olake:catalog-edit:%d", job.ID)).Error; err != nil {
+						return err
+					}
+					result := tx.Model(&models.Job{}).Where("id = ? AND execution_workflow_id IS NULL AND execution_run_id IS NULL", job.ID).
+						Updates(map[string]any{"execution_workflow_id": "replacement-operation", "execution_run_id": "replacement-run"})
+					if result.Error != nil {
+						return result.Error
+					}
+					if result.RowsAffected != 1 {
+						return fmt.Errorf("worker did not claim idle job")
+					}
+					return nil
+				})
+			}()
+			var pid int
+			select {
+			case pid = <-pidReady:
+			case err := <-claimed:
+				t.Fatalf("worker did not reach claim barrier: %v", err)
+			case <-workerContext.Done():
+				t.Fatal(workerContext.Err())
+			}
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				var waiting bool
+				if err := db.conn.WithContext(workerContext).Raw("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = ? AND locktype = 'advisory' AND NOT granted)", pid).Scan(&waiting).Error; err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				select {
+				case err := <-claimed:
+					t.Fatalf("worker bypassed active request fence: %v", err)
+				case <-workerContext.Done():
+					t.Fatal("worker never reached PostgreSQL advisory wait")
+				case <-ticker.C:
+				}
+			}
+			// Do not call release: database/sql must roll the request transaction
+			// back on cancellation while the stale handler is still alive.
+			cancelRequest()
+			select {
+			case err := <-claimed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-workerContext.Done():
+				t.Fatal("cancelled request kept its advisory lock")
+			}
+			if err := mutation.apply(fencedContext, &idleSnapshot); err == nil {
+				t.Fatal("cancelled stale request mutated worker-owned job")
+			}
+			// The owner predicate, not only a context precheck, must reject a
+			// late write even if cleanup uses a cancellation-independent context.
+			if err := mutation.apply(context.WithoutCancel(fencedContext), &idleSnapshot); !errors.Is(err, constants.ErrJobBusy) {
+				t.Fatalf("late stale write bypassed current worker ownership: %v", err)
+			}
+			var fresh models.Job
+			if err := db.conn.First(&fresh, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if fresh.ExecutionWorkflowID == nil || *fresh.ExecutionWorkflowID != "replacement-operation" || fresh.ExecutionRunID == nil || *fresh.ExecutionRunID != "replacement-run" {
+				t.Fatal("stale API write changed replacement epoch")
+			}
+			if fresh.Name != idleSnapshot.Name || fresh.Active != idleSnapshot.Active || fresh.State != idleSnapshot.State || *fresh.SelectedStreamsConfig != *idleSnapshot.SelectedStreamsConfig {
+				t.Fatal("late request changed authoritative worker inputs")
+			}
+		})
+	}
+}
+
+func TestPendingHandoffRemainsAuthorityWithoutJobOwner(t *testing.T) {
+	db := enrollmentTestDatabase(t)
+	job := savedEnrollmentJob(t, db, false, false)
+	record := &models.JobExecutionRecord{JobID: job.ID, WorkflowID: "published-operation", OwnerRunID: "published-run", Phase: "handoff", StateSHA256: "published-checkpoint", HandoffToken: "transfer-token", HandoffActive: true, HandoffRequestID: "stable-patch-id"}
+	if err := db.conn.Create(record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, release, err := db.BeginCatalogEdit(context.Background(), job.ID); !errors.Is(err, constants.ErrJobBusy) {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("pending durable handoff was not busy: %v", err)
+	}
+	if err := db.UpdateJob(context.Background(), job.ID, map[string]any{"state": `{}`, "active": false}); !errors.Is(err, constants.ErrJobBusy) {
+		t.Fatalf("state/pause bypassed pending handoff: %v", err)
+	}
+	if err := db.UpdateJobWithCatalogRevision(context.Background(), job.ID, job.ProjectID, "", false, map[string]any{"name": "stale"}); !errors.Is(err, constants.ErrJobBusy) {
+		t.Fatalf("config bypassed pending handoff: %v", err)
+	}
+	if err := db.DeleteJob(context.Background(), job.ID); !errors.Is(err, constants.ErrJobBusy) {
+		t.Fatalf("delete bypassed pending handoff: %v", err)
+	}
+	if updated, err := db.SetStreamsV2Catalog(context.Background(), ConvertedCatalog{JobID: job.ID, From: *job.StreamsConfig, Available: `{"streams":[]}`, Selected: `{"selected_streams":{}}`}); err != nil || updated {
+		t.Fatalf("linked source migration rewrote pending handoff catalog: updated=%t err=%v", updated, err)
+	}
+	if err := db.conn.Model(record).Update("phase", "handed_off").Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx, release, err := db.BeginCatalogEdit(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("handed-off record kept API authority: %v", err)
+	}
+	defer release()
+	if err := db.UpdateJob(ctx, job.ID, map[string]any{"active": false}); err != nil {
+		t.Fatalf("completed handoff blocked user pause: %v", err)
+	}
+}
+
+func TestExecutionAuthorityPostgresMigrationContract(t *testing.T) {
+	db := enrollmentTestDatabase(t)
+	table := (&models.JobExecutionRecord{}).TableName()
+	var columns []struct {
+		ColumnName    string
+		DataType      string
+		IsNullable    string
+		ColumnDefault *string
+	}
+	if err := db.conn.Raw("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?", table).Scan(&columns).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := map[string]string{
+		"job_id": "integer", "workflow_id": "text", "owner_run_id": "text",
+		"launch_id": "text", "launcher_attempt_id": "text", "phase": "text",
+		"runtime_id": "text", "resource_id": "text", "resource_uid": "text",
+		"outcome": "text", "state_sha256": "text", "catalog_sha256": "text",
+		"handoff_token": "text", "handoff_request_id": "text", "handoff_active": "boolean",
+		"handoff_run_id": "text",
+		"created_at":     "timestamp with time zone", "updated_at": "timestamp with time zone",
+	}
+	if len(columns) != len(wantTypes) {
+		t.Fatalf("execution record column count: got %d want %d", len(columns), len(wantTypes))
+	}
+	for _, column := range columns {
+		if column.DataType != wantTypes[column.ColumnName] || column.IsNullable != "NO" {
+			t.Fatalf("execution column %s has type %s nullable=%s", column.ColumnName, column.DataType, column.IsNullable)
+		}
+		if column.ColumnName == "job_id" || column.ColumnName == "workflow_id" {
+			if column.ColumnDefault != nil {
+				t.Fatalf("execution identity %s must not be generated", column.ColumnName)
+			}
+			continue
+		}
+		wantDefault := "''::text"
+		switch column.ColumnName {
+		case "handoff_active":
+			wantDefault = "false"
+		case "created_at", "updated_at":
+			wantDefault = "now()"
+		}
+		if column.ColumnDefault == nil || *column.ColumnDefault != wantDefault {
+			t.Fatalf("execution column %s has wrong default: %v", column.ColumnName, column.ColumnDefault)
+		}
+	}
+	var ownerColumns int64
+	if err := db.conn.Raw("SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name IN ('execution_workflow_id','execution_run_id') AND data_type = 'text' AND is_nullable = 'YES'", constants.TableNameMap[constants.JobTable]).Scan(&ownerColumns).Error; err != nil || ownerColumns != 2 {
+		t.Fatalf("nullable internal epoch columns: %d, %v", ownerColumns, err)
+	}
+	var indexed bool
+	if err := db.conn.Raw("SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ? AND indexdef LIKE '%(job_id, phase)')", table).Scan(&indexed).Error; err != nil || !indexed {
+		t.Fatalf("pending handoff index missing: %t, %v", indexed, err)
+	}
+	job := savedEnrollmentJob(t, db, true, false)
+	record := &models.JobExecutionRecord{JobID: job.ID, WorkflowID: "closed-operation", OwnerRunID: "old-run", Phase: "closed"}
+	if err := db.conn.Create(record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateJob(context.Background(), job.ID, map[string]any{"name": "new idle intent"}); err != nil {
+		t.Fatal(err)
+	}
+	var retained int64
+	if err := db.conn.Model(&models.JobExecutionRecord{}).Where("job_id = ? AND workflow_id = ?", job.ID, record.WorkflowID).Count(&retained).Error; err != nil || retained != 1 {
+		t.Fatalf("released operation lost admission tombstone: %d, %v", retained, err)
+	}
+	if err := db.DeleteJob(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.Model(&models.JobExecutionRecord{}).Where("job_id = ?", job.ID).Count(&retained).Error; err != nil || retained != 1 {
+		t.Fatalf("job deletion removed permanent admission tombstone: %d, %v", retained, err)
+	}
 }

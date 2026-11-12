@@ -60,20 +60,118 @@ Pre-publication failure retains the old committed data. Once published, checkpoi
 persistence and an ambiguous acknowledgement require reconciliation, not rollback.
 The schedule remains paused on failure or an uncertain start/publication/cleanup outcome;
 only confirmed publication and successful state persistence allow ordinary sync to resume.
-The internal nullable `execution_workflow_id` job column fences worker execution and
-is intentionally excluded from API payloads. Do not clear a retained fence until the
-previous connector is stopped and publication/checkpoint disposition is reconciled.
-Job mutations hold the existing catalog-edit advisory fence from the owner check through
-the mutation; worker ownership claims take the same fence before loading full inputs.
-Nested same-job edits reuse their outer fence. Worker state persistence and ownership release
-remain unfenced so cancelled executions can finish cleanup while an edit waits for them.
+The internal nullable `execution_workflow_id` and `execution_run_id` job columns
+identify the stable operation and its controlling Temporal run. Both are excluded
+from API payloads; clients cannot supply an execution epoch or handoff token.
+The internal `<job-table>_execution_records` table records launch admission,
+runtime/resource identity, outcome, and checkpoint/catalog-bound schedule handoff.
+Its primary key is `(job_id, workflow_id)` and `(job_id, phase)` is indexed.
+Closed records remain permanent tombstones after ownership release and job deletion
+so a delayed activity cannot reopen an already retired operation. They have no
+cascading job foreign key. Storage retention/deletion must preserve CLOSED runtime
+fences and immutable runtime pointers; only log data may be pruned.
 
-Before deploying the new worker, drain old table-resync clear/handoff workflows. The
-obsolete clear-to-sync handoff flag/activity is removed; ordinary clear/sync histories
-with the old flag false retain their normal path. Deploy the UI database migration before
-the worker ownership checks. Do not repoint or change a shared source/destination during
-an active resync: cross-entity editing is an existing separate concern, and this change
-does not add shared-connector configuration locks.
+Job mutations share the catalog-edit advisory fence with worker ownership claims.
+Nested same-job edits reuse the outer fence, without unlocking it on inner return.
+A cancelled/timed-out request can lose its PostgreSQL advisory transaction before
+its handler returns: final state, config, activation and deletion writes therefore
+also use the request context and atomic predicates requiring both owner columns
+to be NULL and no execution record in `handoff`. Catalog-revision checks and writes
+are in the same row-locking transaction. Linked-job catalog migrations have the
+same idle-owner/handoff predicate. Worker cancellation state persistence and release
+do not wait for the API advisory fence; they must compare both execution IDs.
+
+Publication does not make a job editable before normal-sync handoff finishes.
+Pending handoff remains durable authority and rejects state restoration, pause,
+configuration, deletion, manual sync, clear and resync requests with `409`, even
+when Temporal's eventually consistent workflow listing reports no active resync.
+The worker retains ownership and validates the published checkpoint, catalog and
+current active intent before schedule transfer, using a persistent idempotency
+request ID. An ambiguous handoff acknowledgement does not permit a blind later
+unpause. Do not manually clear an owner or edit execution records to bypass busy
+responses; reconcile the admitted runtime and durable checkpoint first.
+
+Deploy the database migration before the new worker, then the matching worker and
+connector images before admitting new work; see [deployment guidance](#atomic-table-resync-deployment).
+Drain all old workers and active/queued old resync, clear/handoff and sync executions
+before cutover: an old writer does not honor the new epoch or runtime fence. Mixed
+old/new execution is unsupported. The connector must support `--execution-id`,
+`--execution-fence` and recovery-only `--resync-recover-only`; an older image must
+fail on these flags rather than use a destructive fallback.
+
+Do not repoint or edit a shared source/destination during an active operation or
+pending handoff. Standalone shared-connector edits are an existing unsupported
+cross-entity configuration path; this change only guards their linked-job catalog
+writes, not the source/destination configuration itself. Different jobs must not
+share a destination table or PostgreSQL replication slot: ownership is per job,
+not a global destination/slot lock. Independent reserved Iceberg resync-property
+edits are unsupported. Clear Destination remains explicitly destructive.
+
+Task history keeps the stable workflow ID. Before log/archive storage lookup, the
+API validates the requested task against the saved project's job namespace and
+reads execution authority scoped to `(job_id, workflow_id)`. Current connector
+and original-launch directories come directly from that SQL record's runtime and
+launch IDs. Mutable `execution-runtime.json` objects never select a generation:
+a delayed old storage Put cannot hide recovery logs or redirect an archive.
+Stable-layout fallback applies only when no execution record exists; a database
+error or a recorded prelaunch operation cannot enable connector fallback.
+Prelaunch operations expose stable worker logs only. Runtime roots are sibling
+`sha256(RuntimeID)` directories/prefixes, not children of `sha256(WorkflowID)`.
+Log cursors bind the current runtime; reload logs after a recovery runtime changes.
+Archive preparation pins one SQL identity snapshot for both filename and streaming.
+Downloads contain current connector artifacts at the archive root, stable worker
+artifacts under `workflow/`, and original admitted-launch artifacts under `launch/`
+when recovery is separate. Intermediate artifacts and immutable pointers remain
+retained in storage; the API does not need pointer objects to read recorded runs.
+
+### Atomic table resync deployment
+
+Treat the API database migration, worker and connector as a coordinated upgrade.
+
+1. Stop admitting job mutations and new schedule actions. Drain old workers and
+   their active/queued sync, clear, resync and legacy clear-to-sync handoff
+   executions, including outstanding activity attempts. Resolve any uncertain
+   publication or cleanup outcome before replacing the old runtime.
+2. Start the updated API with database DDL privileges while workers remain stopped.
+   Startup `AutoMigrate` adds nullable `execution_run_id` alongside
+   `execution_workflow_id` and creates `<job-table>_execution_records` (for example
+   `olake-prod-job_execution_records`). Besides its composite primary key and
+   pending-phase index, the internal record contains `owner_run_id`, `launch_id`,
+   `launcher_attempt_id`, `phase`, `runtime_id`, `resource_id`, `resource_uid`,
+   `outcome`, `state_sha256`, `catalog_sha256`, `handoff_token`, stable transfer
+   epoch `handoff_run_id`, `handoff_active`, `handoff_request_id`, and timestamps.
+   Keep these permanent admission tombstones across releases and job deletion.
+3. Deploy the matching worker and connector. Runtime-specific config/artifact
+   storage must be shared with the worker and support complete atomic fence
+   publication plus create-if-absent OPEN initialization. A CLOSED identity must
+   never be reopened; missing, unreadable or mismatched fences fail closed.
+   Keep storage permissions and control objects throughout cleanup and
+   reconciliation. Kubernetes cleanup uses immutable UID preconditions; Docker
+   cleanup addresses the immutable container ID, not a reusable name.
+4. Resume admission only after all executing images honor the new contract. Do
+   not roll back to an old writer while owners, admitted runtimes or pending
+   handoffs remain. Configure object-store lifecycle and log retention to prune
+   log data only, never CLOSED fences, immutable runtime pointers or entire
+   workflow/runtime prefixes: delayed OPEN/create requests can outlive logs.
+
+An unknown publication stays paused until the admitted runtime is retired and
+publication/checkpoint disposition is proven. Recovery-only execution cannot
+rebuild data or infer abort from a missing publication marker. Never bypass a
+busy job by clearing ownership, deleting execution records or blindly unpausing.
+
+For isolated PostgreSQL regressions, set `OLAKE_TEST_POSTGRES_DSN`; service tests
+also require `POSTGRES_DB` to that same DSN and `SESSION_ON=false` before starting
+the test process. Without the DSN, PostgreSQL tests skip. The cancellation cases
+use PostgreSQL advisory-wait barriers, cancel the request, allow a replacement
+worker epoch to claim, and attempt late state/config/activation/deletion writes.
+Handoff cases exercise exclusion without Temporal visibility and with both job
+owners NULL. Run from `server/` against an isolated real PostgreSQL database:
+
+```bash
+POSTGRES_DB="$OLAKE_TEST_POSTGRES_DSN" SESSION_ON=false OLAKE_STORAGE_MODE=nfs \
+  go test -count=1 -race ./internal/database ./internal/services/etl \
+  ./internal/models ./internal/utils ./internal/services/temporal
+```
 
 
 ## Authentication

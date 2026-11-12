@@ -49,7 +49,7 @@ func (s Service) convertAndStoreLegacyCatalog(ctx context.Context, job *models.J
 	if err != nil {
 		return fmt.Errorf("failed to convert streams: %s", err)
 	}
-	updated, err := s.db.SetStreamsV2Catalog(catalog)
+	updated, err := s.db.SetStreamsV2Catalog(ctx, catalog)
 	if err != nil {
 		return fmt.Errorf("failed to store the split catalog: %s", err)
 	}

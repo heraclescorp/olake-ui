@@ -164,7 +164,7 @@ func (s Service) CreateJob(ctx context.Context, req *dto.CreateJobRequest, proje
 
 	defer func() {
 		if err != nil {
-			if err := s.db.DeleteJob(job.ID); err != nil {
+			if err := s.db.DeleteJob(context.WithoutCancel(ctx), job.ID); err != nil {
 				logger.Errorf("failed to delete job: %s", err)
 			}
 		}
@@ -323,8 +323,8 @@ func (s Service) DeleteJob(ctx context.Context, jobID int) (string, error) {
 		return "", fmt.Errorf("failed to delete temporal workflow: %s", err)
 	}
 
-	if err := s.db.DeleteJob(jobID); err != nil {
-		return "", fmt.Errorf("failed to delete job: %s", err)
+	if err := s.db.DeleteJob(ctx, jobID); err != nil {
+		return "", fmt.Errorf("failed to delete job: %w", err)
 	}
 
 	return job.Name, nil
@@ -421,8 +421,8 @@ func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRe
 		"updated_by_id": *userID,
 	}
 
-	if err := s.db.UpdateJob(job.ID, updateParams); err != nil {
-		return fmt.Errorf("failed to update job activation status: %s", err)
+	if err := s.db.UpdateJob(ctx, job.ID, updateParams); err != nil {
+		return fmt.Errorf("failed to update job activation status: %w", err)
 	}
 
 	return nil
@@ -649,25 +649,35 @@ func (s Service) GetJobTasks(ctx context.Context, projectID string, jobID int) (
 // GetTaskLogs returns a page of a run's logs: the connector's sync logs, the
 // worker's logs, or both merged by time (source "all").
 func (s Service) GetTaskLogs(ctx context.Context, jobID int, filePath, source, cursor string, limit int, direction string) (*dto.JobTaskLogsResponse, error) {
-	_, err := s.db.GetJobByID(jobID, true)
-	if err != nil {
-		if errors.Is(err, constants.ErrJobNotFound) {
-			return nil, fmt.Errorf("%w: %v", constants.ErrJobNotFound, err)
-		}
-		return nil, fmt.Errorf("failed to find job: %s", err)
-	}
-
-	// Get and validate base directory from file path
-	mainSyncDir, err := utils.GetAndValidateLogBaseDir(ctx, filePath)
+	baseDir, execution, err := s.resolveJobExecutionLogPaths(ctx, jobID, filePath)
 	if err != nil {
 		return nil, err
 	}
-
-	logs, err := utils.ReadTaskLogs(ctx, mainSyncDir, source, cursor, limit, direction)
+	logs, err := utils.ReadTaskLogs(ctx, baseDir, execution, source, cursor, limit, direction)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read logs: %w", err)
 	}
 	return logs, nil
+}
+
+func (s Service) resolveJobExecutionLogPaths(ctx context.Context, jobID int, workflowID string) (string, *utils.ExecutionRuntimeLogIdentity, error) {
+	job, err := s.db.GetJobByID(jobID, false)
+	if err != nil {
+		return "", nil, err
+	}
+	if !strings.HasPrefix(workflowID, fmt.Sprintf("sync-%s-%d-", job.ProjectID, job.ID)) {
+		return "", nil, constants.ErrJobNotFound
+	}
+	record, err := s.db.GetJobExecutionRecord(ctx, jobID, workflowID)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read execution log authority: %w", err)
+	}
+	var execution *utils.ExecutionRuntimeLogIdentity
+	if record != nil {
+		execution = &utils.ExecutionRuntimeLogIdentity{RuntimeID: record.RuntimeID, LaunchID: record.LaunchID}
+	}
+	baseDir, err := utils.GetAndValidateLogBaseDir(ctx, workflowID, execution)
+	return baseDir, execution, err
 }
 
 // TODO: frontend needs to send source id and destination id
@@ -902,35 +912,24 @@ func (s Service) RecoverFromClearDestination(ctx context.Context, projectID stri
 	return nil
 }
 
-// StreamLogArchive creates and streams a tar.gz archive of job logs to the provided writer.
-func (s Service) StreamLogArchive(ctx context.Context, jobID int, taskLogFilePath string, writer io.Writer) error {
-	baseDir, err := utils.GetAndValidateLogBaseDir(ctx, taskLogFilePath)
+// PrepareLogArchive selects SQL authority once, before response headers. The
+// returned streamer keeps that same admitted runtime even if recovery advances.
+func (s Service) PrepareLogArchive(ctx context.Context, jobID int, workflowID string) (string, func(io.Writer) error, error) {
+	baseDir, execution, err := s.resolveJobExecutionLogPaths(ctx, jobID, workflowID)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-
-	_, err = utils.GetAndValidateSyncFolder(ctx, baseDir)
+	filename, err := utils.GetLogArchiveFilename(ctx, jobID, baseDir, execution)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-
-	logger.Infof("Starting log archive creation for job_id[%d]", jobID)
-
-	// Create streaming pipeline: tarWriter → gzipWriter → writer
-	gzipWriter := gzip.NewWriter(writer)
-	defer gzipWriter.Close()
-
-	tarWriter := tar.NewWriter(gzipWriter)
-	defer tarWriter.Close()
-
-	logger.Debugf("Adding files from %s to archive", baseDir)
-	if err := utils.AddFilesToArchive(ctx, baseDir, tarWriter); err != nil {
-		return err
-	}
-
-	logger.Infof("Successfully created log archive for job_id[%d]", jobID)
-
-	return nil
+	return filename, func(writer io.Writer) error {
+		gzipWriter := gzip.NewWriter(writer)
+		defer gzipWriter.Close()
+		tarWriter := tar.NewWriter(gzipWriter)
+		defer tarWriter.Close()
+		return utils.AddFilesToArchive(ctx, baseDir, execution, tarWriter)
+	}, nil
 }
 
 func (s Service) UpdateStateFile(ctx context.Context, jobID int, stateFile string) error {
@@ -950,8 +949,8 @@ func (s Service) UpdateStateFile(ctx context.Context, jobID int, stateFile strin
 		return err
 	}
 
-	if err := s.db.UpdateJob(jobID, map[string]any{"state": stateFile}); err != nil {
-		return fmt.Errorf("failed to update job: %s", err)
+	if err := s.db.UpdateJob(ctx, jobID, map[string]any{"state": stateFile}); err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
 	}
 
 	logger.Infof("state file updated successfully for job_id[%d] with state: %s", jobID, stateFile)

@@ -88,7 +88,7 @@ func jobRunType(command temporal.Command) string {
 }
 
 func ensureJobExecutionIdle(job *models.Job) error {
-	if job.ExecutionWorkflowID != nil && *job.ExecutionWorkflowID != "" {
+	if job.ExecutionWorkflowID != nil || job.ExecutionRunID != nil {
 		return fmt.Errorf("%w: job execution is in progress or awaiting reconciliation", constants.ErrJobBusy)
 	}
 	return nil

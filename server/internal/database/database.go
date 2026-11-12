@@ -43,6 +43,7 @@ func Init() (*Database, error) {
 		new(models.Source),
 		new(models.Destination),
 		new(models.Job),
+		new(models.JobExecutionRecord),
 		new(models.User),
 		new(models.Catalog),
 	); err != nil {

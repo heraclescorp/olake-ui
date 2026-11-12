@@ -217,7 +217,7 @@ func (s Service) UpdateSource(ctx context.Context, projectID string, id int, req
 		return fmt.Errorf("failed to cancel workflows for source update: %s", err)
 	}
 
-	if err := s.db.UpdateSource(existing, catalogs); err != nil {
+	if err := s.db.UpdateSource(ctx, existing, catalogs); err != nil {
 		if len(catalogs) > 0 {
 			telemetry.TrackStreamsMigrationFailure(ctx, telemetry.MigrationTriggerSourceUpgrade, existing, len(catalogs), err)
 		}

@@ -362,9 +362,9 @@ func readLogsFromFilesystem(mainLogDir string, cursor int64, limit int, directio
 	return response, nil
 }
 
-func addFilesystemFilesToArchive(baseDir string, tarWriter *tar.Writer) error {
+func addFilesystemFilesToArchive(baseDir, archivePrefix string, tarWriter *tar.Writer) error {
 	stateFile := filepath.Join(baseDir, "state.json")
-	if err := addFileToArchive(tarWriter, stateFile, "state.json"); err != nil {
+	if err := addFileToArchive(tarWriter, stateFile, filepath.Join(archivePrefix, "state.json")); err != nil {
 		logger.Warnf("failed to add state.json to archive: %s", err)
 		// Continue anyway - state.json might not exist
 	}
@@ -378,9 +378,14 @@ func addFilesystemFilesToArchive(baseDir string, tarWriter *tar.Writer) error {
 			return nil
 		}
 
-		archivePath := filepath.Join("logs", filepath.Base(filePath))
+		archivePath := filepath.Join(archivePrefix, "logs", filepath.Base(filePath))
 		return addFileToArchive(tarWriter, filePath, archivePath)
 	})
+	// Only the optional stable-worker/original-launch trees may lack logs
+	// before their first flush. Missing current connector logs remain an error.
+	if pathErr, ok := err.(*os.PathError); archivePrefix != "" && ok && pathErr.Path == logsRoot && os.IsNotExist(pathErr) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to add files from logs directory %s: %s", logsRoot, err)
 	}

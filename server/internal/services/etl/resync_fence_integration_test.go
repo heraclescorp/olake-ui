@@ -48,7 +48,7 @@ func resyncFenceService(t *testing.T) (Service, *models.Job, *models.User) {
 func TestResyncOwnerBlocksFencedJobMutationsAndReleasesLocks(t *testing.T) {
 	service, job, actor := resyncFenceService(t)
 	owner := "sync-project-a-resync-in-progress"
-	if err := service.db.UpdateJob(job.ID, map[string]interface{}{"execution_workflow_id": owner}); err != nil {
+	if err := service.db.UpdateJob(context.Background(), job.ID, map[string]interface{}{"execution_workflow_id": owner, "execution_run_id": "current-run"}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := service.db.GetJobByID(job.ID, false)
@@ -251,5 +251,60 @@ func TestNestedClearDispatchReturnsBeforeWorkerClaimsCatalogFence(t *testing.T) 
 	}
 	if err := service.UpdateStateFile(context.Background(), job.ID, `{"unsafe":true}`); !errors.Is(err, constants.ErrJobBusy) {
 		t.Fatalf("state edit raced past clear ownership: %v", err)
+	}
+}
+
+func TestPendingHandoffBlocksStateAndPauseWithoutTemporalVisibility(t *testing.T) {
+	service, job, actor := resyncFenceService(t)
+	workerDB, err := sql.Open("pgx", os.Getenv("OLAKE_TEST_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workerDB.Close()
+	// Deliberately leave both job owner columns NULL: the durable handoff is
+	// independently authoritative even if Temporal visibility reports no run.
+	if _, err := workerDB.Exec("INSERT INTO "+pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName())+
+		" (job_id, workflow_id, owner_run_id, phase, state_sha256, catalog_sha256, handoff_token, handoff_active, handoff_request_id) VALUES ($1, 'published-operation', 'published-run', 'handoff', 'published-state', 'published-catalog', 'transfer-token', true, 'stable-patch-id')", job.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Any Temporal call would panic; rejection must come from PostgreSQL, not
+	// ListWorkflow or an in-memory workflow status approximation.
+	service.temporal = nil
+	for _, mutation := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "state restore", call: func() error { return service.UpdateStateFile(context.Background(), job.ID, `{"stale":true}`) }},
+		{name: "pause", call: func() error {
+			return service.ActivateJob(context.Background(), job.ID, dto.JobStatusRequest{Activate: false}, &actor.ID)
+		}},
+		{name: "config", call: func() error {
+			return service.UpdateJob(context.Background(), &dto.UpdateJobRequest{}, job.ProjectID, job.ID, &actor.ID)
+		}},
+		{name: "delete", call: func() error { _, err := service.DeleteJob(context.Background(), job.ID); return err }},
+		{name: "sync", call: func() error { _, err := service.SyncJob(context.Background(), job.ProjectID, job.ID); return err }},
+		{name: "resync", call: func() error {
+			return service.ResyncTable(context.Background(), job.ProjectID, job.ID, dto.ResyncTableRequest{Namespace: "public", StreamName: "orders"})
+		}},
+		{name: "clear", call: func() error {
+			return service.ClearDestination(context.Background(), job.ProjectID, job.ID, types.StreamsCatalog{}, 0, true)
+		}},
+		{name: "clear recovery", call: func() error {
+			return service.RecoverFromClearDestination(context.Background(), job.ProjectID, job.ID)
+		}},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := mutation.call(); !errors.Is(err, constants.ErrJobBusy) {
+				t.Fatalf("pending handoff lost API exclusion: %v", err)
+			}
+		})
+	}
+	fresh, err := service.db.GetJobByID(job.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, []byte(fresh.State), []byte(job.State))
+	if !fresh.Active || fresh.Name != job.Name || fresh.ExecutionWorkflowID != nil || fresh.ExecutionRunID != nil {
+		t.Fatal("rejected handoff mutation changed job intent or ownership")
 	}
 }

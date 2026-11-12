@@ -153,6 +153,11 @@ func TestResyncHistoryHasDistinctOperationType(t *testing.T) {
 	if !errors.Is(ensureJobExecutionIdle(job), constants.ErrJobBusy) {
 		t.Fatal("retained execution owner must block mutation")
 	}
+	job.ExecutionWorkflowID = nil
+	job.ExecutionRunID = &owner
+	if !errors.Is(ensureJobExecutionIdle(job), constants.ErrJobBusy) {
+		t.Fatal("retained run epoch must independently block mutation")
+	}
 }
 
 func TestResyncCapabilityGateDoesNotTouchUnsupportedJobs(t *testing.T) {

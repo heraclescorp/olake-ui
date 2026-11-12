@@ -9,6 +9,7 @@ import (
 
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 	"github.com/datazip-inc/olake-ui/server/internal/models"
+	"github.com/lib/pq"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -63,6 +64,17 @@ func (db *Database) BeginCatalogEdit(ctx context.Context, jobID int) (context.Co
 		release()
 		return nil, nil, fmt.Errorf("%w: settings are already being edited", constants.ErrJobBusy)
 	}
+	var handoffPending bool
+	err = tx.QueryRowContext(fenceContext,
+		"SELECT EXISTS (SELECT 1 FROM "+pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName())+" WHERE job_id = $1 AND phase = 'handoff')", jobID).Scan(&handoffPending)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	if handoffPending {
+		release()
+		return nil, nil, fmt.Errorf("%w: published checkpoint handoff is pending", constants.ErrJobBusy)
+	}
 	return context.WithValue(fenceContext, key, true), release, nil
 }
 
@@ -83,6 +95,16 @@ func (db *Database) withCatalogRevision(ctx context.Context, jobID int, projectI
 			}
 			return err
 		}
+		if job.ExecutionWorkflowID != nil || job.ExecutionRunID != nil {
+			return constants.ErrJobBusy
+		}
+		var handoffPending int64
+		if err := tx.Model(&models.JobExecutionRecord{}).Where("job_id = ? AND phase = ?", jobID, "handoff").Count(&handoffPending).Error; err != nil {
+			return err
+		}
+		if handoffPending != 0 {
+			return constants.ErrJobBusy
+		}
 		enabled, err := job.AutoTableEnrollmentEnabled()
 		if err != nil {
 			return err
@@ -99,6 +121,33 @@ func (db *Database) withCatalogRevision(ctx context.Context, jobID int, projectI
 		if params == nil {
 			return nil
 		}
-		return tx.Model(&job).Updates(params).Error
+		return db.idleJobMutationResult(ctx, jobID, idleJobMutation(tx, jobID).Updates(params))
 	})
+}
+
+// The advisory lock can be released by request cancellation before a handler
+// returns. Keep the final write conditional on current database authority too.
+func idleJobMutation(tx *gorm.DB, jobID int) *gorm.DB {
+	pending := tx.Session(&gorm.Session{NewDB: true}).Model(&models.JobExecutionRecord{}).
+		Select("1").Where("job_id = ? AND phase = ?", jobID, "handoff")
+	return tx.Model(&models.Job{}).
+		Where("id = ? AND execution_workflow_id IS NULL AND execution_run_id IS NULL", jobID).
+		Where("NOT EXISTS (?)", pending)
+}
+
+func (db *Database) idleJobMutationResult(ctx context.Context, jobID int, result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	var count int64
+	if err := result.Session(&gorm.Session{NewDB: true, Context: ctx}).Model(&models.Job{}).Where("id = ?", jobID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return constants.ErrJobNotFound
+	}
+	return constants.ErrJobBusy
 }
