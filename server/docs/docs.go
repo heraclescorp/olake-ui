@@ -3179,6 +3179,9 @@ const docTemplate = `{
                 "append_mode": {
                     "type": "boolean"
                 },
+                "drop_removed_columns": {
+                    "type": "boolean"
+                },
                 "normalization": {
                     "type": "boolean"
                 },

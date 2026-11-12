@@ -71,6 +71,9 @@ export const DEFAULT_AVAILABLE_UPDATE_TYPES = [
 	UpsertType.POSITIONAL,
 ]
 
+export const DROP_REMOVED_COLUMNS_HELP_TEXT =
+	"When on, columns dropped in the PostgreSQL source are removed from the Iceberg table schema too. Data already written stays in files, but readers no longer see the column. When off, the column stays and new or changed rows get NULL."
+
 export const NORMALIZATION_TOOLTIP_TEXT =
 	"Flattens nested JSON one level deep into separate columns, so the table can be queried with standard SQL"
 

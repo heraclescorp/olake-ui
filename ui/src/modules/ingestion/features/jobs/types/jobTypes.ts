@@ -167,6 +167,8 @@ export interface AutoTableEnrollmentDefaults {
 	append_mode: boolean
 	update_type: UpsertType
 	sync_new_columns: boolean
+	// Optional for the connector: absent means off.
+	drop_removed_columns?: boolean
 }
 
 export type AutoTableEnrollmentPolicy =

@@ -2,6 +2,7 @@ import { isKafkaSource } from "@/modules/ingestion/common/utils"
 
 import DataFilterSectionSingle from "./DataFilterSectionSingle"
 import DedupKeysSelectionSingle from "./DedupKeysSelectionSingle"
+import DropRemovedColumnsSectionSingle from "./DropRemovedColumnsSectionSingle"
 import IngestionModeSectionSingle from "./IngestionModeSectionSingle"
 import NormalizationSectionSingle from "./NormalizationSectionSingle"
 import SyncModeSectionSingle from "./SyncModeSectionSingle"
@@ -41,6 +42,7 @@ const ConfigTab = ({
 				/>
 			</div>
 			<NormalizationSectionSingle />
+			<DropRemovedColumnsSectionSingle destinationType={destinationType} />
 			<DataFilterSectionSingle />
 		</div>
 	)

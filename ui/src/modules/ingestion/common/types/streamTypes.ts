@@ -85,6 +85,7 @@ export interface SelectedStream {
 	stream_name: string
 	partition_regex: string
 	normalization?: boolean
+	drop_removed_columns?: boolean
 	chunk_column?: string
 	filter?: string
 	disabled?: boolean

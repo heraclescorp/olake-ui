@@ -23,6 +23,7 @@ export interface BulkStreamConfig {
 	dedupKeys?: string[]
 	upsertType?: UpsertType
 	normalization?: boolean
+	dropRemovedColumns?: boolean
 	partitionRegex?: string
 	filterValue?: string
 	filterConfig?: FilterConfig
@@ -71,6 +72,11 @@ interface StreamSelectionState {
 	updateNormalization: (
 		stream: StreamIdentifier,
 		normalization: boolean,
+	) => void
+
+	updateDropRemovedColumns: (
+		stream: StreamIdentifier,
+		dropRemovedColumns: boolean,
 	) => void
 
 	updateUseSourceColumnNames: (
@@ -267,6 +273,32 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 						...prev.selected_streams,
 						[namespace]: prev.selected_streams[namespace].map(s =>
 							s.stream_name === streamName ? { ...s, normalization } : s,
+						),
+					},
+				},
+			}
+		}),
+
+	updateDropRemovedColumns: (stream, dropRemovedColumns) =>
+		set(state => {
+			if (!state.streamsData) return state
+			const { streamName, namespace } = stream
+
+			const prev = state.streamsData
+			const streamExists = prev.selected_streams[namespace]?.some(
+				s => s.stream_name === streamName,
+			)
+			if (!streamExists) return state
+
+			return {
+				streamsData: {
+					...prev,
+					selected_streams: {
+						...prev.selected_streams,
+						[namespace]: prev.selected_streams[namespace].map(s =>
+							s.stream_name === streamName
+								? { ...s, drop_removed_columns: dropRemovedColumns }
+								: s,
 						),
 					},
 				},
@@ -514,6 +546,8 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 						)
 					if (config.normalization !== undefined)
 						newStream.normalization = config.normalization
+					if (config.dropRemovedColumns !== undefined)
+						newStream.drop_removed_columns = config.dropRemovedColumns
 					if (config.partitionRegex !== undefined)
 						newStream.partition_regex = config.partitionRegex
 					if (config.useSourceColumnNames !== undefined)

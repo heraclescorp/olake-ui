@@ -37,6 +37,7 @@ import {
 import BulkStreamSelectorList from "../streams/BulkStreamSelectorList"
 import DataFilterSectionBulk from "../streams/DataFilterSectionBulk"
 import DedupKeysSelectionBulk from "../streams/DedupKeysSelectionBulk"
+import DropRemovedColumnsSectionBulk from "../streams/DropRemovedColumnsSectionBulk"
 import IngestionModeSectionBulk from "../streams/IngestionModeSectionBulk"
 import NormalizationSectionBulk from "../streams/NormalizationSectionBulk"
 import PartitionRegexSectionBulk from "../streams/PartitionRegexSectionBulk"
@@ -58,6 +59,7 @@ type BulkConfig = {
 	dedupKeys: string[]
 	upsertType?: UpsertType
 	normalization: boolean
+	dropRemovedColumns: boolean
 	filter: string
 	filterConfig: FilterConfig | undefined
 	partitionRegex: string
@@ -70,6 +72,7 @@ enum BulkDirtyFieldKey {
 	DedupKeys = "dedupKeys",
 	UpsertType = "upsertType",
 	Normalization = "normalization",
+	DropRemovedColumns = "dropRemovedColumns",
 	Filter = "filter",
 	PartitionRegex = "partitionRegex",
 	UseSourceColumnNames = "useSourceColumnNames",
@@ -83,6 +86,7 @@ const INITIAL_DIRTY_FIELDS: BulkDirtyFields = {
 	[BulkDirtyFieldKey.DedupKeys]: false,
 	[BulkDirtyFieldKey.UpsertType]: false,
 	[BulkDirtyFieldKey.Normalization]: false,
+	[BulkDirtyFieldKey.DropRemovedColumns]: false,
 	[BulkDirtyFieldKey.Filter]: false,
 	[BulkDirtyFieldKey.PartitionRegex]: false,
 	[BulkDirtyFieldKey.UseSourceColumnNames]: false,
@@ -95,6 +99,7 @@ const INITIAL_BULK_CONFIG: BulkConfig = {
 	dedupKeys: [],
 	upsertType: undefined,
 	normalization: false,
+	dropRemovedColumns: false,
 	filter: "",
 	filterConfig: undefined,
 	partitionRegex: "",
@@ -228,6 +233,7 @@ const BulkConfigureStreamsModal = ({
 			upsertType: bulkStreamDefaults.update_type,
 			normalization:
 				bulkStreamDefaults.normalization ?? STREAM_DEFAULTS.normalization,
+			dropRemovedColumns: false,
 			filter: "",
 			filterConfig: undefined,
 			partitionRegex: "",
@@ -279,6 +285,9 @@ const BulkConfigureStreamsModal = ({
 				}),
 			...(dirtyFields[BulkDirtyFieldKey.Normalization] && {
 				normalization: bulkConfig.normalization,
+			}),
+			...(dirtyFields[BulkDirtyFieldKey.DropRemovedColumns] && {
+				dropRemovedColumns: bulkConfig.dropRemovedColumns,
 			}),
 			...(dirtyFields[BulkDirtyFieldKey.Filter] && {
 				filterValue: bulkConfig.filter,
@@ -577,6 +586,13 @@ const BulkConfigureStreamsModal = ({
 													normalization={bulkConfig.normalization}
 												/>
 											)}
+											{dirtyFields[BulkDirtyFieldKey.DropRemovedColumns] && (
+												<DropRemovedColumnsSectionBulk
+													destinationType={destinationType}
+													normalization={bulkConfig.normalization}
+													dropRemovedColumns={bulkConfig.dropRemovedColumns}
+												/>
+											)}
 											{dirtyFields[BulkDirtyFieldKey.Filter] && (
 												<DataFilterSectionBulk
 													bulkStream={bulkStream}
@@ -858,6 +874,19 @@ const BulkConfigureStreamsModal = ({
 														onChange={(value: boolean) => {
 															setBulkConfigField("normalization", value)
 															markDirty(BulkDirtyFieldKey.Normalization)
+														}}
+													/>
+
+													<DropRemovedColumnsSectionBulk
+														isDirty={
+															dirtyFields[BulkDirtyFieldKey.DropRemovedColumns]
+														}
+														destinationType={destinationType}
+														normalization={bulkConfig.normalization}
+														dropRemovedColumns={bulkConfig.dropRemovedColumns}
+														onChange={(value: boolean) => {
+															setBulkConfigField("dropRemovedColumns", value)
+															markDirty(BulkDirtyFieldKey.DropRemovedColumns)
 														}}
 													/>
 

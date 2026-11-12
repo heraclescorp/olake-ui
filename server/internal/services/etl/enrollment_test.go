@@ -82,6 +82,38 @@ func TestEnrollmentAcceptsExplicitFalseDefaultsAndUnselectedExistingSchemas(t *t
 	}
 }
 
+func TestEnrollmentDropRemovedColumnsIsOptionalAndRoundTrips(t *testing.T) {
+	settings := enrollmentSettings(t, validEnrollmentSettings)
+	if settings.AutoTableEnrollment.Defaults.DropRemovedColumns != nil {
+		t.Fatal("absent drop_removed_columns must decode as unset")
+	}
+	if err := validateEnrollmentPolicy(settings, "postgres", "iceberg", enrollmentJob(t, true).StreamsCatalog()); err != nil {
+		t.Fatalf("policy without drop_removed_columns rejected: %v", err)
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != validEnrollmentSettings {
+		t.Fatalf("policy without drop_removed_columns was rewritten: %s", data)
+	}
+	withDrop := enrollmentSettings(t, `{"auto_table_enrollment":{"enabled":true,"schemas":[{"namespace":"public","destination_database":"warehouse:public"}],"defaults":{"normalization":true,"append_mode":false,"update_type":"pos","sync_new_columns":false,"drop_removed_columns":true}}}`)
+	if err := validateEnrollmentPolicy(withDrop, "postgres", "iceberg", enrollmentJob(t, true).StreamsCatalog()); err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(withDrop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded dto.AdvancedSettings
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.AutoTableEnrollment.Defaults.DropRemovedColumns; got == nil || !*got {
+		t.Fatalf("drop_removed_columns lost on round trip: %s", data)
+	}
+}
+
 func TestEnrollmentRejectsInvalidPolicy(t *testing.T) {
 	for _, split := range []bool{false, true} {
 		for _, tc := range []struct {
