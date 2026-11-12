@@ -141,14 +141,26 @@ export const enrollmentCatalogFromStreams = (
 									"",
 							),
 					)
-		if (!namespace.trim() || databases.size !== 1 || databases.has("")) {
+		// Iceberg resolves the dynamic separator to an underscore; preserve saved routing.
+		const resolvedDatabases = new Map<string, string>()
+		for (const database of databases) {
+			const resolved = database.split(":").join("_")
+			if (!resolvedDatabases.has(resolved)) {
+				resolvedDatabases.set(resolved, database)
+			}
+		}
+		if (
+			!namespace.trim() ||
+			resolvedDatabases.size !== 1 ||
+			resolvedDatabases.has("")
+		) {
 			return {
 				namespaces,
 				schemas: [],
 				error: `Cannot infer one destination database for source schema ${namespace || "(empty)"}. Resolve conflicting or missing stream routing before saving automatic enrollment.`,
 			}
 		}
-		for (const destination_database of databases) {
+		for (const destination_database of resolvedDatabases.values()) {
 			schemas.push({ namespace, destination_database })
 		}
 	}
