@@ -35,9 +35,15 @@ POST, before any operation starts.
 
 `POST /api/v1/project/:projectid/jobs/:id/resync-table` accepts only
 `{"namespace":"public","stream_name":"orders"}` from the saved selected catalog.
-The saved source must be PostgreSQL and the saved destination must be Iceberg.
-Other source/destination types are rejected before schedule changes or workflow start;
-Clear Destination remains available as a separate explicitly destructive operation.
+The saved source must be PostgreSQL and the saved destination configuration must
+select `type: "ICEBERG"` with `writer.catalog_type` in the canonical REST family:
+`rest`, `lakekeeper`, `nessie`, `s3tables`, `unity`, `polaris`, `biglake`, or `horizon`.
+Catalog comparison trims whitespace and ignores case, matching the connector.
+Native S3 Tables is supported. Missing/empty `writer.catalog_type` defaults to Glue
+in the connector and is excluded, as are explicit Glue and other catalog families.
+Unsupported saved configuration is rejected before schedule changes or workflow
+start. Ordinary Glue, Parquet and non-PostgreSQL jobs retain their existing
+lifecycle; Clear Destination remains a separate explicitly destructive operation.
 The job must be unpaused, idle, and use a backfill-capable mode. Successful acceptance
 returns the usual `200` response with null data; it does not mean publication has finished.
 History identifies the operation as `resync`, separate from destructive Clear Destination.
@@ -66,6 +72,13 @@ from API payloads; clients cannot supply an execution epoch or handoff token.
 The internal `<job-table>_execution_records` table records launch admission,
 runtime/resource identity, outcome, and checkpoint/catalog-bound schedule handoff.
 Its primary key is `(job_id, workflow_id)` and `(job_id, phase)` is indexed.
+The JSON-hidden `controlled BOOLEAN NOT NULL DEFAULT false` field records the
+worker's canonical saved-job domain decision under the shared database fence;
+caller flags cannot select it. It is immutable per operation: domain mismatch
+requires reconciliation, not a guessed upgrade or downgrade. Explicit legacy
+records have `controlled=false` and empty runtime/launch IDs; controlled executions
+use the runtime-fence and retirement-proof protocol. No automatic backfill guesses
+the domain of an existing record.
 Closed records remain permanent tombstones after ownership release and job deletion
 so a delayed activity cannot reopen an already retired operation. They have no
 cascading job foreign key. Storage retention/deletion must preserve CLOSED runtime
@@ -113,9 +126,11 @@ reads execution authority scoped to `(job_id, workflow_id)`. Current connector
 and original-launch directories come directly from that SQL record's runtime and
 launch IDs. Mutable `execution-runtime.json` objects never select a generation:
 a delayed old storage Put cannot hide recovery logs or redirect an archive.
-Stable-layout fallback applies only when no execution record exists; a database
-error or a recorded prelaunch operation cannot enable connector fallback.
-Prelaunch operations expose stable worker logs only. Runtime roots are sibling
+Stable layout applies only when no execution record exists or when the record
+explicitly has `controlled=false` with both runtime and launch IDs empty. A legacy
+record containing runtime identity is rejected rather than downgraded. Database
+errors and controlled prelaunch records never enable connector fallback; the
+latter expose stable worker logs only. Runtime roots are sibling
 `sha256(RuntimeID)` directories/prefixes, not children of `sha256(WorkflowID)`.
 Log cursors bind the current runtime; reload logs after a recovery runtime changes.
 Archive preparation pins one SQL identity snapshot for both filename and streaming.
@@ -136,7 +151,7 @@ Treat the API database migration, worker and connector as a coordinated upgrade.
    Startup `AutoMigrate` adds nullable `execution_run_id` alongside
    `execution_workflow_id` and creates `<job-table>_execution_records` (for example
    `olake-prod-job_execution_records`). Besides its composite primary key and
-   pending-phase index, the internal record contains `owner_run_id`, `launch_id`,
+   pending-phase index, the internal record contains `owner_run_id`, `controlled`, `launch_id`,
    `launcher_attempt_id`, `phase`, `runtime_id`, `resource_id`, `resource_uid`,
    `outcome`, `state_sha256`, `catalog_sha256`, `handoff_token`, stable transfer
    epoch `handoff_run_id`, `handoff_active`, `handoff_request_id`, and timestamps.

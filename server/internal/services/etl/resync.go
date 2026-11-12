@@ -24,15 +24,14 @@ func (s Service) ResyncTable(ctx context.Context, projectID string, jobID int, r
 	if err != nil {
 		return fmt.Errorf("failed to get job: %w", err)
 	}
-	_, err = resolveTableResync(job, projectID, req)
-	if err != nil {
-		return err
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
 	}
 	return s.startTableResync(ctx, job, req)
 }
 
 func (s Service) startTableResync(ctx context.Context, job *models.Job, req dto.ResyncTableRequest) error {
-	if err := validateAtomicResyncSupport(job); err != nil {
+	if _, err := resolveTableResync(job, job.ProjectID, req); err != nil {
 		return err
 	}
 	projectID, jobID := job.ProjectID, job.ID
@@ -98,10 +97,28 @@ func validateAtomicResyncSupport(job *models.Job) error {
 	if job.Source == nil || job.Destination == nil {
 		return fmt.Errorf("%w: saved source and destination are required", constants.ErrInvalidResync)
 	}
-	if job.Source.Type != "postgres" || job.Destination.DestType != "iceberg" {
-		return fmt.Errorf("%w: uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only; Clear Destination remains a separate destructive operation", constants.ErrInvalidResync)
+	if !strings.EqualFold(strings.TrimSpace(job.Source.Type), "postgres") || !strings.EqualFold(strings.TrimSpace(job.Destination.DestType), "iceberg") {
+		return fmt.Errorf("%w: uninterrupted table resync supports PostgreSQL sources with Iceberg REST-family destinations only; Clear Destination remains a separate destructive operation", constants.ErrInvalidResync)
 	}
-	return nil
+	// Match the connector's canonical destination configuration and RESTCatalogs
+	// family, including native S3 Tables. A missing catalog_type defaults to Glue
+	// in the connector and must not accidentally enter the controlled path.
+	var destination struct {
+		Type   string `json:"type"`
+		Writer struct {
+			CatalogType string `json:"catalog_type"`
+		} `json:"writer"`
+	}
+	if err := json.Unmarshal([]byte(job.Destination.Config), &destination); err != nil {
+		return fmt.Errorf("%w: invalid saved destination configuration: %v", constants.ErrInvalidResync, err)
+	}
+	if strings.EqualFold(strings.TrimSpace(destination.Type), "ICEBERG") {
+		switch strings.ToLower(strings.TrimSpace(destination.Writer.CatalogType)) {
+		case "rest", "lakekeeper", "nessie", "s3tables", "unity", "polaris", "biglake", "horizon":
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: saved destination writer.catalog_type must select a supported Iceberg REST-family catalog; Glue/default Glue and other catalogs retain their ordinary job behavior", constants.ErrInvalidResync)
 }
 
 func resolveTableResync(job *models.Job, projectID string, req dto.ResyncTableRequest) (types.StreamsCatalog, error) {

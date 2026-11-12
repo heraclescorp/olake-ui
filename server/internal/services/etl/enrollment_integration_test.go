@@ -87,7 +87,7 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 	if err := db.CreateSource(source); err != nil {
 		t.Fatal(err)
 	}
-	destination := &models.Destination{Name: "destination", DestType: "iceberg", Version: "v1.1.1", Config: `{}`, ProjectID: "project-a", CreatedByID: actor.ID, UpdatedByID: actor.ID}
+	destination := &models.Destination{Name: "destination", DestType: "iceberg", Version: "v1.1.1", Config: resyncDestinationConfig, ProjectID: "project-a", CreatedByID: actor.ID, UpdatedByID: actor.ID}
 	if err := db.CreateDestination(destination); err != nil {
 		t.Fatal(err)
 	}

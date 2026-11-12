@@ -62,7 +62,7 @@ func TestExecutionLogsUseScopedSQLAuthorityDespiteLatePointerPut(t *testing.T) {
 	}
 	defer workerDB.Close()
 	table := pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName())
-	if _, err := workerDB.Exec("INSERT INTO "+table+" (job_id,workflow_id,owner_run_id,phase,runtime_id,launch_id) VALUES ($1,$2,'current-run','admitted','current-runtime','admitted-launch')", job.ID, workflowID); err != nil {
+	if _, err := workerDB.Exec("INSERT INTO "+table+" (job_id,workflow_id,owner_run_id,controlled,phase,runtime_id,launch_id) VALUES ($1,$2,'current-run',true,'admitted','current-runtime','admitted-launch')", job.ID, workflowID); err != nil {
 		t.Fatal(err)
 	}
 	stalePointer, err := json.Marshal(map[string]any{"version": 1, "workflow_id": workflowID, "run_id": "old-run", "runtime_id": "admitted-launch", "launch_id": "admitted-launch", "subdir": launch})
@@ -134,6 +134,36 @@ func TestExecutionLogsUseScopedSQLAuthorityDespiteLatePointerPut(t *testing.T) {
 	cancel()
 	if _, err := service.GetTaskLogs(cancelled, job.ID, workflowID, utils.LogSourceSync, "", 20, "older"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("authority query error enabled legacy fallback: %v", err)
+	}
+	if _, err := workerDB.Exec("UPDATE "+table+" SET controlled=false,runtime_id='must-not-downgrade' WHERE job_id=$1 AND workflow_id=$2", job.ID, workflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetTaskLogs(context.Background(), job.ID, workflowID, utils.LogSourceSync, "", 20, "older"); err == nil {
+		t.Fatal("legacy discriminator downgraded a retained runtime identity")
+	}
+	if _, err := workerDB.Exec("UPDATE "+table+" SET runtime_id='',launch_id='' WHERE job_id=$1 AND workflow_id=$2", job.ID, workflowID); err != nil {
+		t.Fatal(err)
+	}
+	logs, err = service.GetTaskLogs(context.Background(), job.ID, workflowID, utils.LogSourceSync, "", 20, "older")
+	if err != nil || len(logs.Logs) != 1 || logs.Logs[0]["message"] != "legacy connector" {
+		t.Fatalf("explicit legacy record lost stable connector logs: %+v %v", logs, err)
+	}
+	legacyFilename, legacyStream, err := service.PrepareLogArchive(context.Background(), job.ID, workflowID)
+	if err != nil || legacyFilename != fmt.Sprintf("job-%d-logs-legacy.tar.gz", job.ID) {
+		t.Fatalf("explicit legacy archive did not use stable layout: %s %v", legacyFilename, err)
+	}
+	var legacyArchive bytes.Buffer
+	if err := legacyStream(&legacyArchive); err != nil {
+		t.Fatal(err)
+	}
+	legacyReader, err := gzip.NewReader(&legacyArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyContents, err := io.ReadAll(legacyReader)
+	_ = legacyReader.Close()
+	if err != nil || !bytes.Contains(legacyContents, []byte(`{"runtime":"legacy"}`)) || bytes.Contains(legacyContents, []byte(`{"runtime":"current"}`)) {
+		t.Fatalf("legacy archive selected controlled artifacts: %v", err)
 	}
 	if _, err := workerDB.Exec("DELETE FROM "+table+" WHERE job_id=$1 AND workflow_id=$2", job.ID, workflowID); err != nil {
 		t.Fatal(err)

@@ -674,7 +674,11 @@ func (s Service) resolveJobExecutionLogPaths(ctx context.Context, jobID int, wor
 	}
 	var execution *utils.ExecutionRuntimeLogIdentity
 	if record != nil {
-		execution = &utils.ExecutionRuntimeLogIdentity{RuntimeID: record.RuntimeID, LaunchID: record.LaunchID}
+		if record.Controlled {
+			execution = &utils.ExecutionRuntimeLogIdentity{RuntimeID: record.RuntimeID, LaunchID: record.LaunchID}
+		} else if record.RuntimeID != "" || record.LaunchID != "" {
+			return "", nil, fmt.Errorf("legacy execution record contains a controlled runtime identity; reconcile without downgrade")
+		}
 	}
 	baseDir, err := utils.GetAndValidateLogBaseDir(ctx, workflowID, execution)
 	return baseDir, execution, err

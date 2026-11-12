@@ -84,8 +84,8 @@ func GetAndValidateSyncFolder(ctx context.Context, baseDir string) (string, erro
 	}
 }
 
-// ExecutionRuntimeLogIdentity is a snapshot selected from the execution record
-// scoped to the requested job and workflow. Nil means no record (legacy layout).
+// ExecutionRuntimeLogIdentity is a snapshot selected from the controlled record
+// scoped to the requested job/workflow. Nil is absent or explicit legacy authority.
 type ExecutionRuntimeLogIdentity struct {
 	RuntimeID string
 	LaunchID  string

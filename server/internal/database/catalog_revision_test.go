@@ -638,6 +638,7 @@ func TestExecutionAuthorityPostgresMigrationContract(t *testing.T) {
 		"outcome": "text", "state_sha256": "text", "catalog_sha256": "text",
 		"handoff_token": "text", "handoff_request_id": "text", "handoff_active": "boolean",
 		"handoff_run_id": "text",
+		"controlled":     "boolean",
 		"created_at":     "timestamp with time zone", "updated_at": "timestamp with time zone",
 	}
 	if len(columns) != len(wantTypes) {
@@ -655,7 +656,7 @@ func TestExecutionAuthorityPostgresMigrationContract(t *testing.T) {
 		}
 		wantDefault := "''::text"
 		switch column.ColumnName {
-		case "handoff_active":
+		case "handoff_active", "controlled":
 			wantDefault = "false"
 		case "created_at", "updated_at":
 			wantDefault = "now()"

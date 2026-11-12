@@ -79,7 +79,7 @@ func TestExecutionAuthorityIsNotPublicJSON(t *testing.T) {
 			t.Fatalf("internal execution authority exposed as %s", field)
 		}
 	}
-	raw, err = json.Marshal(JobExecutionRecord{JobID: 17, WorkflowID: workflowID, OwnerRunID: runID, Phase: "handoff", HandoffToken: "private-transfer-token"})
+	raw, err = json.Marshal(JobExecutionRecord{JobID: 17, WorkflowID: workflowID, OwnerRunID: runID, Controlled: true, Phase: "handoff", HandoffToken: "private-transfer-token"})
 	if err != nil || string(raw) != `{}` {
 		t.Fatalf("execution record is public JSON: %s, %v", raw, err)
 	}

@@ -116,6 +116,7 @@ type JobExecutionRecord struct {
 	JobID             int       `json:"-" gorm:"column:job_id;type:integer;size:32;primaryKey;autoIncrement:false;index:,composite:job_phase,priority:1"`
 	WorkflowID        string    `json:"-" gorm:"column:workflow_id;type:text;primaryKey"`
 	OwnerRunID        string    `json:"-" gorm:"column:owner_run_id;type:text;not null;default:''"`
+	Controlled        bool      `json:"-" gorm:"column:controlled;type:boolean;not null;default:false"`
 	LaunchID          string    `json:"-" gorm:"column:launch_id;type:text;not null;default:''"`
 	LauncherAttemptID string    `json:"-" gorm:"column:launcher_attempt_id;type:text;not null;default:''"`
 	Phase             string    `json:"-" gorm:"column:phase;type:text;not null;default:'';index:,composite:job_phase,priority:2"`

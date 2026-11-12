@@ -1,6 +1,7 @@
 package etl
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -15,10 +16,11 @@ import (
 
 const resyncAvailable = `{"catalog_metadata":{"revision":7},"streams":[{"stream":{"name":"orders","namespace":"public","sync_mode":"cdc","destination_database":"archive","destination_table":"orders_backup","json_schema":{"properties":{"amount":{"type":"number"}}}},"metadata":{"keep":true}},{"stream":{"name":"orders","namespace":"other","sync_mode":"cdc"}},{"stream":{"name":"users","namespace":"public","sync_mode":"full_refresh"}}]}`
 const resyncSelected = `{"selection_metadata":{"keep":true},"selected_streams":{"public":[{"stream_name":"orders","sync_mode":"cdc","destination_database":"warehouse","destination_table":"paid_orders","selected_columns":{"columns":["amount"],"sync_new_columns":false},"partition_regex":"dt={yyyy}","custom":{"keep":true}},{"stream_name":"users"}],"other":[{"stream_name":"orders","sync_mode":"cdc"}]}}`
+const resyncDestinationConfig = `{"type":"ICEBERG","writer":{"catalog_type":"rest"}}`
 
 func resyncJob(t *testing.T, split bool) *models.Job {
 	t.Helper()
-	job := &models.Job{ID: 17, ProjectID: "project-a", Active: true, State: `{"global":{"lsn":"0/ABC"},"streams":{"public.orders":{"done":true},"other.orders":{"cursor":42}}}`, Source: &models.Source{Type: "postgres", Version: "v0.8.2"}, Destination: &models.Destination{DestType: "iceberg"}}
+	job := &models.Job{ID: 17, ProjectID: "project-a", Active: true, State: `{"global":{"lsn":"0/ABC"},"streams":{"public.orders":{"done":true},"other.orders":{"cursor":42}}}`, Source: &models.Source{Type: "postgres", Version: "v0.8.2"}, Destination: &models.Destination{DestType: "iceberg", Config: resyncDestinationConfig}}
 	if split {
 		available, selected := resyncAvailable, resyncSelected
 		job.AvailableStreamsConfig, job.SelectedStreamsConfig = &available, &selected
@@ -204,6 +206,60 @@ func TestTableResyncAcceptsBackfillModes(t *testing.T) {
 			}
 			if len(selected.Streams["public"]) != 2 || selected.Streams["public"][0].Mode != mode {
 				t.Fatalf("backfill mode changed: %s", catalog.Selected)
+			}
+		})
+	}
+}
+
+func TestResyncAcceptsCanonicalRESTCatalogFamilyIncludingS3Tables(t *testing.T) {
+	for _, catalog := range []string{"rest", "lakekeeper", "nessie", "s3tables", "unity", "polaris", "biglake", "horizon"} {
+		t.Run(catalog, func(t *testing.T) {
+			job := resyncJob(t, true)
+			job.Source.Type, job.Destination.DestType = " Postgres ", " Iceberg "
+			config, err := json.Marshal(map[string]any{"type": " iceberg ", "writer": map[string]string{"catalog_type": " " + strings.ToUpper(catalog) + " "}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job.Destination.Config = string(config)
+			if err := validateAtomicResyncSupport(job); err != nil {
+				t.Fatalf("canonical REST-family catalog was excluded: %v", err)
+			}
+		})
+	}
+}
+
+func TestResyncRejectsSavedCatalogOutsideRESTFamilyBeforeScheduling(t *testing.T) {
+	for _, unsupported := range []struct {
+		name string
+		config string
+	}{
+		{name: "missing saved type", config: `{}`},
+		{name: "default Glue", config: `{"type":"ICEBERG"}`},
+		{name: "empty writer catalog", config: `{"type":"ICEBERG","writer":{"catalog_type":""}}`},
+		{name: "root catalog is not writer catalog", config: `{"type":"ICEBERG","catalog_type":"rest"}`},
+		{name: "explicit Glue", config: `{"type":"ICEBERG","writer":{"catalog_type":"glue"}}`},
+		{name: "Hive", config: `{"type":"ICEBERG","writer":{"catalog_type":"hive"}}`},
+		{name: "unknown catalog", config: `{"type":"ICEBERG","writer":{"catalog_type":"unknown"}}`},
+		{name: "Parquet canonical type", config: `{"type":"PARQUET","writer":{"catalog_type":"rest"}}`},
+		{name: "malformed saved config", config: `{`},
+		{name: "invalid writer type", config: `{"type":"ICEBERG","writer":[]}`},
+	} {
+		t.Run(unsupported.name, func(t *testing.T) {
+			job := resyncJob(t, true)
+			job.Destination.Config = unsupported.config
+			before, err := json.Marshal(job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// No Temporal client: even inspecting or pausing the schedule is a
+			// failure. Only canonical saved configuration can enter the path.
+			err = (Service{}).startTableResync(context.Background(), job, dto.ResyncTableRequest{Namespace: "public", StreamName: "orders"})
+			if !errors.Is(err, constants.ErrInvalidResync) {
+				t.Fatalf("unsupported saved catalog reached scheduling: %v", err)
+			}
+			after, err := json.Marshal(job)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("catalog rejection changed authoritative job configuration")
 			}
 		})
 	}
