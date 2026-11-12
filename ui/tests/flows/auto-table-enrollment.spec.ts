@@ -1116,6 +1116,53 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 			expect(requests.updates).toEqual([])
 		})
 
+		test(`${pagePath}: equivalent dynamic and custom namespaces save without changing stream routing`, async ({
+			page,
+		}) => {
+			const requests = await installEnrollmentFixture(page, {
+				format: "split",
+				sparseSelection: true,
+				sparseDestinationDatabase: "warehouse_public_new",
+			})
+			await page.goto(pagePath)
+			await expectRequestedDefaults(page)
+			await page
+				.getByRole("button", {
+					name: pagePath.endsWith("edit") ? "Finish" : "Save",
+					exact: true,
+				})
+				.click()
+			await expect(page).toHaveURL(/\/jobs$/)
+			expect(
+				requests.updates[0].advanced_settings?.auto_table_enrollment?.schemas,
+			).toEqual([
+				{ namespace: "archive", destination_database: "saved:archive" },
+				{ namespace: "public", destination_database: "warehouse:public_new" },
+			])
+			const savedCatalog = submittedCatalog(requests.job)
+			const saved = savedCatalog.selected_streams.public
+			const updatedCatalog = submittedCatalog(requests.updates[0])
+			const updated = updatedCatalog.selected_streams.public
+			for (const selection of saved) {
+				expect(
+					updated.find(stream => stream.stream_name === selection.stream_name)
+						?.destination_database ??
+						updatedCatalog.streams.find(
+							entry =>
+								entry.stream.namespace === "public" &&
+								entry.stream.name === selection.stream_name,
+						)?.stream.destination_database,
+				).toBe(
+					selection.destination_database ??
+						savedCatalog.streams.find(
+							entry =>
+								entry.stream.namespace === "public" &&
+								entry.stream.name === selection.stream_name,
+						)?.stream.destination_database,
+				)
+			}
+		})
+
 		test(`${pagePath}: consistent sparse inherited mappings are accepted and preserved`, async ({
 			page,
 		}) => {
