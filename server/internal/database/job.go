@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -266,14 +267,33 @@ func (db *Database) GetJobExecutionRecord(ctx context.Context, jobID int, workfl
 	return &record, nil
 }
 
-func (db *Database) GetPendingJobHandoff(ctx context.Context, jobID int) (*models.JobExecutionRecord, error) {
-	var record models.JobExecutionRecord
-	err := db.conn.WithContext(ctx).Where("job_id = ? AND phase = ?", jobID, "handoff").Take(&record).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &record, nil
+func (db *Database) GetExecutionRecoverySnapshot(ctx context.Context, jobID int) (*models.Job, *models.JobExecutionRecord, error) {
+	var job models.Job
+	var record *models.JobExecutionRecord
+	err := db.conn.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Select("id", "project_id", "execution_workflow_id", "execution_run_id").Where("id = ?", jobID).First(&job).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return constants.ErrJobNotFound
+			}
+			return err
+		}
+		query := tx.Where("job_id = ?", jobID)
+		if job.ExecutionWorkflowID == nil && job.ExecutionRunID == nil {
+			query = query.Where("phase = ?", "handoff")
+		} else if job.ExecutionWorkflowID != nil && *job.ExecutionWorkflowID != "" {
+			query = query.Where("workflow_id = ?", *job.ExecutionWorkflowID)
+		} else {
+			return nil
+		}
+		var found models.JobExecutionRecord
+		if err := query.Take(&found).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		record = &found
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return &job, record, err
 }

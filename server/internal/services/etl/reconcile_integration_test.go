@@ -215,3 +215,44 @@ func TestReconcileNeverResetsRunningControllingWorkflow(t *testing.T) {
 		t.Fatalf("running workflow was reset: %v", err)
 	}
 }
+
+func TestRecoveryObservationDoesNotCompeteWithWorkerFence(t *testing.T) {
+	service, job, _, remote, connection := recoveryServiceFixture(t, "closing")
+	remote.status, remote.latestStatus = enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
+	ctx := context.Background()
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", fmt.Sprintf("olake:catalog-edit:%d", job.ID)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, false)
+	if err != nil || status.Status != "active" || status.CanReconcile || status.WorkflowID != remote.workflowID || status.RunID != remote.ownerRun {
+		t.Fatalf("worker fence hid active execution: %+v %v", status, err)
+	}
+	if _, err := service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, true); !errors.Is(err, constants.ErrJobBusy) || len(remote.requests) != 0 {
+		t.Fatalf("reset escaped worker fence: %v", err)
+	}
+	if _, release, err := service.db.BeginCatalogEdit(ctx, job.ID); !errors.Is(err, constants.ErrJobBusy) {
+		if err == nil {
+			release()
+		}
+		t.Fatalf("observation weakened mutation fence: %v", err)
+	}
+}
+
+func TestRecoverySnapshotNeverReportsOrphanHandoffIdle(t *testing.T) {
+	service, job, _, remote, connection := recoveryServiceFixture(t, "handoff")
+	if _, err := connection.Exec("UPDATE "+pq.QuoteIdentifier(job.TableName())+" SET execution_workflow_id=NULL,execution_run_id=NULL WHERE id=$1", job.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.ReconcileJobExecution(context.Background(), job.ProjectID, job.ID, false)
+	if err != nil || status.Status != "blocked" || status.WorkflowID != remote.workflowID || status.RunID != remote.ownerRun || status.Phase != "handoff" || status.CanReconcile {
+		t.Fatalf("orphaned transfer did not remain blocked: %+v %v", status, err)
+	}
+	if _, err := service.ReconcileJobExecution(context.Background(), job.ProjectID, job.ID, true); !errors.Is(err, constants.ErrJobBusy) || len(remote.requests) != 0 {
+		t.Fatalf("orphaned transfer was reset or released: %v", err)
+	}
+}

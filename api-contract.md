@@ -107,9 +107,11 @@ responses; reconcile the admitted runtime and durable checkpoint first.
 
 ### Canceled execution recovery
 
-Authenticated `GET /api/v1/project/:projectid/jobs/:id/reconcile` reports durable
-ownership and the exact controlling Temporal status. The server verifies that the
-job belongs to the route's project. Data includes `status` (`idle`, `active`,
+Authenticated `GET /api/v1/project/:projectid/jobs/:id/reconcile` reads the SQL
+owner and handoff in one read-only snapshot without taking the worker's catalog
+fence, then inspects the controlling Temporal run. The result is observational:
+either authority can change afterward, and mutations recheck under the fence. The server verifies that the job
+belongs to the route's project. Data includes `status` (`idle`, `active`,
 `awaiting_reconciliation`, `reconciling`, `blocked`), `workflow_id`, `run_id`,
 `phase`, `outcome`, `temporal_status`, `can_reconcile`, `schedule_paused`, `message`
 and an available `last_error`. `idle` means no owner **and no pending handoff**;

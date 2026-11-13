@@ -38,15 +38,17 @@ func recoveryFailure(failure *failurepb.Failure) string {
 
 // GET is observation only. POST resets the exact retained operation; admission
 // still requires worker-side fence closure, exact resource retirement and proof.
-// Holding the shared catalog fence serializes duplicate POSTs with API edits and
-// epoch adoption. A deterministic reset request ID covers a lost RPC response.
 func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jobID int, reset bool) (dto.JobExecutionRecovery, error) {
-	ctx, release, err := s.db.BeginExecutionRecovery(ctx, jobID)
-	if err != nil {
-		return dto.JobExecutionRecovery{}, err
+	if reset {
+		var release func()
+		var err error
+		ctx, release, err = s.db.BeginExecutionRecovery(ctx, jobID)
+		if err != nil {
+			return dto.JobExecutionRecovery{}, err
+		}
+		defer release()
 	}
-	defer release()
-	job, err := s.db.GetJobByID(jobID, false)
+	job, record, err := s.db.GetExecutionRecoverySnapshot(ctx, jobID)
 	if err != nil {
 		return dto.JobExecutionRecovery{}, err
 	}
@@ -55,12 +57,8 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 	}
 	result := dto.JobExecutionRecovery{Status: "idle", Message: "No retained execution owner. New sync and table resync requests use the normal admission checks."}
 	if job.ExecutionWorkflowID == nil && job.ExecutionRunID == nil {
-		pending, err := s.db.GetPendingJobHandoff(ctx, jobID)
-		if err != nil {
-			return result, err
-		}
-		if pending != nil {
-			result.Status, result.WorkflowID, result.RunID, result.Phase = "blocked", pending.WorkflowID, pending.OwnerRunID, pending.Phase
+		if record != nil {
+			result.Status, result.WorkflowID, result.RunID, result.Phase = "blocked", record.WorkflowID, record.OwnerRunID, record.Phase
 			result.Message = "A published checkpoint handoff remains bound, but the job owner is missing. Restore the original ownership binding with the worker/database operator; no resume, new data launch or owner clear is permitted."
 			return recoveryNotReady(result, reset)
 		}
@@ -82,10 +80,6 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 		return recoveryNotReady(result, reset)
 	}
 	result.WorkflowID, result.RunID = *job.ExecutionWorkflowID, *job.ExecutionRunID
-	record, err := s.db.GetJobExecutionRecord(ctx, jobID, result.WorkflowID)
-	if err != nil {
-		return result, err
-	}
 	if record == nil || record.OwnerRunID != result.RunID || !record.Controlled || !strings.HasPrefix(result.WorkflowID, fmt.Sprintf("sync-%s-%d-", projectID, jobID)) {
 		result.Message = "The retained owner has no matching controlled execution record. Reconcile it with its original worker; this API cannot safely downgrade or force-unlock it."
 		return recoveryNotReady(result, reset)

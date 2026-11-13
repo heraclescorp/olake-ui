@@ -73,6 +73,9 @@ func (db *Database) beginCatalogFence(ctx context.Context, jobID int, recovery b
 	}
 	if !acquired {
 		release()
+		if recovery {
+			return nil, nil, fmt.Errorf("%w: execution authority is busy; refresh recovery status and retry", constants.ErrJobBusy)
+		}
 		return nil, nil, fmt.Errorf("%w: settings are already being edited", constants.ErrJobBusy)
 	}
 	var handoffPending bool
