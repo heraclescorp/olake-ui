@@ -60,6 +60,8 @@ func RegisterRoutes(engine *gin.Engine, h *handlers.Handler) {
 	etl.GET("/project/:projectid/jobs/:id/logs/download", etlHandler.DownloadTaskLogs)
 	etl.POST("/project/:projectid/jobs/:id/clear-destination", etlHandler.ClearDestination)
 	etl.POST("/project/:projectid/jobs/:id/resync-table", etlHandler.ResyncTable)
+	etl.GET("/project/:projectid/jobs/:id/reconcile", etlHandler.GetJobExecutionRecovery)
+	etl.POST("/project/:projectid/jobs/:id/reconcile", etlHandler.ReconcileJobExecution)
 	etl.GET("/project/:projectid/jobs/:id/clear-destination", etlHandler.GetClearDestinationStatus)
 	etl.POST("/project/:projectid/jobs/:id/stream-difference", etlHandler.GetStreamDifference)
 

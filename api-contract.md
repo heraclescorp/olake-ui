@@ -64,11 +64,12 @@ has a 12-hour safety bound; longer attempts fail rather than risk staging-file e
 
 Pre-publication failure retains the old committed data. Once published, checkpoint
 persistence and an ambiguous acknowledgement require reconciliation, not rollback.
-The schedule remains paused on failure or an uncertain start/publication/cleanup outcome;
-only confirmed publication and successful state persistence allow ordinary sync to resume.
+The schedule remains paused on failure or an uncertain start/publication/cleanup outcome.
+Confirmed publication and successful state persistence resume through the bound handoff;
+positively unpublished/settled retirement requires a separate explicit schedule resume.
 The internal nullable `execution_workflow_id` and `execution_run_id` job columns
-identify the stable operation and its controlling Temporal run. Both are excluded
-from API payloads; clients cannot supply an execution epoch or handoff token.
+identify the stable operation and its controlling Temporal run. They are read-only in
+recovery responses; clients cannot supply an execution epoch or handoff token.
 The internal `<job-table>_execution_records` table records launch admission,
 runtime/resource identity, outcome, and checkpoint/catalog-bound schedule handoff.
 Its primary key is `(job_id, workflow_id)` and `(job_id, phase)` is indexed.
@@ -103,6 +104,49 @@ current active intent before schedule transfer, using a persistent idempotency
 request ID. An ambiguous handoff acknowledgement does not permit a blind later
 unpause. Do not manually clear an owner or edit execution records to bypass busy
 responses; reconcile the admitted runtime and durable checkpoint first.
+
+### Canceled execution recovery
+
+Authenticated `GET /api/v1/project/:projectid/jobs/:id/reconcile` reports durable
+ownership and the exact controlling Temporal status. The server verifies that the
+job belongs to the route's project. Data includes `status` (`idle`, `active`,
+`awaiting_reconciliation`, `reconciling`, `blocked`), `workflow_id`, `run_id`,
+`phase`, `outcome`, `temporal_status`, `can_reconcile`, `schedule_paused`, `message`
+and an available `last_error`. `idle` means no owner **and no pending handoff**;
+it does not mean the ordinary schedule is unpaused. Missing authority, unsupported
+legacy records, unavailable history and unknown remote outcomes are not success.
+
+`POST` to the same endpoint takes no owner/run/launch input (the UI sends `{}`).
+It reads the retained owner and controlled record under the shared SQL exclusion
+fence, confirms the exact old run is terminal, verifies matching original workflow
+inputs and resets the **same WorkflowID** before its first workflow-task completion.
+It never resets a running operation or starts a new data operation under the same
+ID. A deterministic request ID deduplicates a lost reset response; another running
+recovery returns `409`. An accepted reset returns `202` with `status: reconciling`
+and `recovery_run_id`, not a claim of retirement. Poll GET until the real SQL
+ownership/phase settles. A completed failed recovery remains actionable `blocked`;
+after restoring the missing evidence/access, POST can recheck the same operation.
+
+The worker first consumes an exact original-runtime `not_published` receipt only
+after SQL admission closure, acknowledged CLOSED fence and confirmed immutable
+resource retirement. A proven canceled resync is adopted CLOSED/retired and released
+without a connector relaunch. Unknown resync publication may use the existing
+recovery-only publication-marker path, never a fresh rebuild. Pending published
+handoffs retain their original checkpoint/catalog/active-intent/token binding.
+Old ordinary `execution-result.json` with `outcome: unknown` cannot be reclassified
+from cancellation, exit status, process absence or logs: restore access to an
+existing valid immutable receipt, or independently establish remote disposition
+with the connector/catalog operator and a supported evidence-producing reconciliation
+mechanism. This API has no force-unlock, fabricated receipt or unsafe override.
+
+After proof-backed retirement, the settings UI offers **Resume schedule** only
+when GET reports idle and paused. It uses the existing activation endpoint with
+`{ "activate": true }`, including when the database already says active. Activation
+rechecks no owner/no pending handoff under the fence and positively verifies that
+the current schedule action is a normal sync for this project/job before unpausing.
+It does not explicitly trigger a sync; the user can request a fresh sync or table
+resync afterward. A stale idle UI cannot resume a newly owned job.
+
 
 Deploy the database migration before the new worker, then the matching worker and
 connector images before admitting new work; see [deployment guidance](#atomic-table-resync-deployment).

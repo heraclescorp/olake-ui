@@ -265,3 +265,15 @@ func (db *Database) GetJobExecutionRecord(ctx context.Context, jobID int, workfl
 	}
 	return &record, nil
 }
+
+func (db *Database) GetPendingJobHandoff(ctx context.Context, jobID int) (*models.JobExecutionRecord, error) {
+	var record models.JobExecutionRecord
+	err := db.conn.WithContext(ctx).Where("job_id = ? AND phase = ?", jobID, "handoff").Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}

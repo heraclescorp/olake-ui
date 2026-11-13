@@ -65,6 +65,25 @@ export interface ResyncTableRequest {
 	stream_name: string
 }
 
+export interface JobExecutionRecovery {
+	status:
+		| "idle"
+		| "active"
+		| "reconciling"
+		| "awaiting_reconciliation"
+		| "blocked"
+	schedule_paused?: boolean
+	workflow_id?: string
+	run_id?: string
+	recovery_run_id?: string
+	phase?: string
+	outcome?: string
+	temporal_status?: string
+	can_reconcile: boolean
+	message: string
+	last_error?: string
+}
+
 // Exactly one catalog format per request: legacy streams_config, or both v2 fields.
 export type StreamsCatalogPayload =
 	| { streams_config: string }

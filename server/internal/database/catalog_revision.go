@@ -18,10 +18,21 @@ import (
 type catalogEditContextKey struct {
 	database *Database
 	jobID    int
+	recovery bool
 }
 
 func (db *Database) BeginCatalogEdit(ctx context.Context, jobID int) (context.Context, func(), error) {
-	key := catalogEditContextKey{database: db, jobID: jobID}
+	return db.beginCatalogFence(ctx, jobID, false)
+}
+
+// BeginExecutionRecovery retains the same exclusion lock but permits inspection
+// and replay of a bound handoff. It never grants permission for catalog edits.
+func (db *Database) BeginExecutionRecovery(ctx context.Context, jobID int) (context.Context, func(), error) {
+	return db.beginCatalogFence(ctx, jobID, true)
+}
+
+func (db *Database) beginCatalogFence(ctx context.Context, jobID int, recovery bool) (context.Context, func(), error) {
+	key := catalogEditContextKey{database: db, jobID: jobID, recovery: recovery}
 	if ctx.Value(key) != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -71,7 +82,7 @@ func (db *Database) BeginCatalogEdit(ctx context.Context, jobID int) (context.Co
 		release()
 		return nil, nil, err
 	}
-	if handoffPending {
+	if handoffPending && !recovery {
 		release()
 		return nil, nil, fmt.Errorf("%w: published checkpoint handoff is pending", constants.ErrJobBusy)
 	}

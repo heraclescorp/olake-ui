@@ -9,6 +9,7 @@ import {
 	Job,
 	JobBase,
 	JobTask,
+	JobExecutionRecovery,
 	ResyncTableRequest,
 	StreamDifferenceRequest,
 	TaskLogsDirection,
@@ -112,6 +113,23 @@ export const jobService = {
 			console.error("Error canceling job:", error)
 			throw error
 		}
+	},
+
+	getExecutionRecovery: async (id: string): Promise<JobExecutionRecovery> => {
+		const response = await api.get<JobExecutionRecovery>(
+			`${API_CONFIG.ENDPOINTS.ETL.JOBS(API_CONFIG.PROJECT_ID)}/${id}/reconcile`,
+			{ showNotification: false },
+		)
+		return response.data
+	},
+
+	reconcileExecution: async (id: string): Promise<JobExecutionRecovery> => {
+		const response = await api.post<JobExecutionRecovery>(
+			`${API_CONFIG.ENDPOINTS.ETL.JOBS(API_CONFIG.PROJECT_ID)}/${id}/reconcile`,
+			{},
+			{ showNotification: false },
+		)
+		return response.data
 	},
 
 	syncJob: async (id: string): Promise<any> => {

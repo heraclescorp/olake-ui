@@ -1,6 +1,9 @@
 import type { Page } from "@playwright/test"
 
-import type { Job } from "../../src/modules/ingestion/features/jobs/types/jobTypes"
+import type {
+	Job,
+	JobExecutionRecovery,
+} from "../../src/modules/ingestion/features/jobs/types/jobTypes"
 import { JobType } from "../../src/modules/ingestion/features/jobs/types/jobTypes"
 import { test, expect } from "../fixtures/base.fixture"
 
@@ -16,6 +19,7 @@ interface ResyncFixture {
 	invalidCatalog?: boolean
 	unsupportedSource?: boolean
 	unsupportedDestination?: boolean
+	recovery?: "known-unpublished" | "unknown"
 }
 
 interface FixtureRequests {
@@ -88,7 +92,8 @@ const installResyncFixture = async (
 		frequency: "* * * * *",
 		catalog_revision: "a1".repeat(32),
 		last_run_type: options.resyncing ? JobType.Resync : JobType.Sync,
-		last_run_state: options.running || options.resyncing ? "running" : "completed",
+		last_run_state:
+			options.running || options.resyncing ? "running" : "completed",
 		last_run_time: "2026-11-01T00:00:00Z",
 		created_at: "2026-11-01T00:00:00Z",
 		updated_at: "2026-11-01T00:00:00Z",
@@ -121,6 +126,24 @@ const installResyncFixture = async (
 			JSON.stringify({ state: { isAuthenticated: true }, version: 0 }),
 		)
 	})
+	let recovery: JobExecutionRecovery = options.recovery
+		? {
+				status: "awaiting_reconciliation",
+				workflow_id: "sync-123-42-resync-original",
+				run_id: "cancelled-run",
+				phase: "closing",
+				temporal_status: "Canceled",
+				can_reconcile: true,
+				message:
+					"Canceled workflow retains execution ownership. Reconcile the same operation to validate immutable publication evidence; no new data launch is permitted.",
+			}
+		: {
+				status: "idle",
+				can_reconcile: false,
+				schedule_paused: false,
+				message: "No retained execution owner.",
+			}
+	let recoveryReads = 0
 	await page.route("**/api/v1/**", async route => {
 		const request = route.request()
 		const path = new URL(request.url()).pathname
@@ -133,6 +156,31 @@ const installResyncFixture = async (
 		}
 		if (request.method() !== "GET") {
 			requests.writes.push(`${request.method()} ${path}`)
+			if (path.endsWith("/jobs/42/reconcile") && request.method() === "POST") {
+				expect(request.postDataJSON()).toEqual({})
+				recovery = {
+					...recovery,
+					status: "reconciling",
+					can_reconcile: false,
+					recovery_run_id: "recovery-run",
+					message:
+						"Reconciliation was accepted, not completed. Ownership remains protected until proof is confirmed.",
+				}
+				await route.fulfill({ status: 202, json: { data: recovery } })
+				return
+			}
+			if (path.endsWith("/jobs/42/activate") && request.method() === "POST") {
+				expect(recovery.status).toBe("idle")
+				expect(request.postDataJSON()).toEqual({ activate: true })
+				recovery = {
+					status: "idle",
+					can_reconcile: false,
+					schedule_paused: false,
+					message: "No retained owner; normal sync schedule resumed.",
+				}
+				await route.fulfill({ json: { data: null } })
+				return
+			}
 			if (
 				path.endsWith("/jobs/42/resync-table") &&
 				request.method() === "POST"
@@ -159,6 +207,28 @@ const installResyncFixture = async (
 		if (path.endsWith("/jobs/42")) {
 			requests.jobReads += 1
 			data = job
+		} else if (path.endsWith("/jobs/42/reconcile")) {
+			if (recovery.status === "reconciling" && ++recoveryReads > 1) {
+				recovery =
+					options.recovery === "known-unpublished"
+						? {
+								status: "idle",
+								can_reconcile: false,
+								schedule_paused: true,
+								message:
+									"No retained execution owner. The ordinary schedule remains paused. Explicitly resume the schedule before requesting a new sync or table resync.",
+							}
+						: {
+								...recovery,
+								status: "blocked",
+								can_reconcile: true,
+								message:
+									"The remote outcome is still unconfirmed. Restore the immutable receipt or independently establish the remote outcome with the connector/catalog operator. Reconcile never force-clears ownership or treats logs as proof.",
+								last_error:
+									"execution mutation outcome is not positively settled; retain job ownership",
+							}
+			}
+			data = recovery
 		} else if (path.endsWith("/jobs/42/clear-destination")) {
 			data = { running: !!options.clearing }
 		} else if (path.endsWith("/jobs")) {
@@ -223,12 +293,20 @@ test.describe("Table resync (intercepted APIs only)", () => {
 					? "warehouse_override/orders_selected"
 					: "analytics_public/orders_catalog",
 			)
-			await expect(dialog).toContainText("Existing data remains readable until atomic publication")
+			await expect(dialog).toContainText(
+				"Existing data remains readable until atomic publication",
+			)
 			await expect(dialog).toContainText("existing table identity")
-			await expect(dialog).toContainText("failure before publication leaves the old data intact")
+			await expect(dialog).toContainText(
+				"failure before publication leaves the old data intact",
+			)
 			await expect(dialog).toContainText("full saved catalog and state")
-			await expect(dialog).toContainText("checkpoints and ordinary CDC behavior")
-			await expect(dialog).toContainText("Snowflake see the replacement after their usual refresh")
+			await expect(dialog).toContainText(
+				"checkpoints and ordinary CDC behavior",
+			)
+			await expect(dialog).toContainText(
+				"Snowflake see the replacement after their usual refresh",
+			)
 			await expect(dialog).toContainText("limited to 12 hours")
 			await expect(dialog).not.toContainText("will be cleared")
 			await expect(dialog).not.toContainText("Clear and resync")
@@ -283,12 +361,14 @@ test.describe("Table resync (intercepted APIs only)", () => {
 		{
 			name: "unsupported source",
 			options: { unsupportedSource: true },
-			reason: "Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
+			reason:
+				"Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
 		},
 		{
 			name: "unsupported destination",
 			options: { unsupportedDestination: true },
-			reason: "Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
+			reason:
+				"Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only",
 		},
 	]) {
 		test(`blocks resync for ${scenario.name}`, async ({ page }) => {
@@ -355,5 +435,73 @@ test.describe("Table resync (intercepted APIs only)", () => {
 		expect(requests.writes).toEqual([
 			"POST /api/v1/project/123/jobs/42/resync-table",
 		])
+	})
+
+	test("reconciles a canceled unpublished operation before explicitly resuming its schedule", async ({
+		page,
+	}) => {
+		const requests = await installResyncFixture(page, {
+			recovery: "known-unpublished",
+		})
+		await page.goto("/jobs/42/settings")
+		const panel = page.getByRole("region", { name: "Execution recovery" })
+		await expect(panel).toBeVisible()
+		await expect(
+			page.getByRole("button", { name: "Resync table", exact: true }),
+		).toBeDisabled()
+		await panel
+			.getByRole("button", { name: "Reconcile execution", exact: true })
+			.click()
+		await expect(panel).toContainText("not yet released")
+		await expect(
+			panel.getByRole("button", { name: "Reconcile execution", exact: true }),
+		).toBeDisabled()
+		await expect(
+			panel.getByRole("button", { name: "Resume schedule", exact: true }),
+		).toBeVisible({ timeout: 10000 })
+		await expect(
+			page.getByRole("button", { name: "Resync table", exact: true }),
+		).toBeDisabled()
+		await panel
+			.getByRole("button", { name: "Resume schedule", exact: true })
+			.click()
+		await expect(panel).not.toBeVisible()
+		await expect(
+			page.getByRole("combobox", { name: "Table to resync" }),
+		).toBeEnabled()
+		expect(requests.writes).toEqual([
+			"POST /api/v1/project/123/jobs/42/reconcile",
+			"POST /api/v1/project/123/jobs/42/activate",
+		])
+		expect(requests.resyncBodies).toEqual([])
+	})
+
+	test("keeps an unknown ordinary outcome owned and explains the missing evidence", async ({
+		page,
+	}) => {
+		const requests = await installResyncFixture(page, { recovery: "unknown" })
+		await page.goto("/jobs/42/settings")
+		const panel = page.getByRole("region", { name: "Execution recovery" })
+		await expect(panel).toBeVisible()
+		await panel
+			.getByRole("button", { name: "Reconcile execution", exact: true })
+			.click()
+		await expect(panel).toContainText("remote outcome is still unconfirmed", {
+			timeout: 10000,
+		})
+		await expect(panel).toContainText("immutable receipt")
+		await expect(
+			panel.getByRole("link", { name: "View execution history and logs" }),
+		).toBeVisible()
+		await expect(
+			panel.getByRole("button", { name: "Resume schedule", exact: true }),
+		).not.toBeVisible()
+		await expect(
+			page.getByRole("button", { name: "Resync table", exact: true }),
+		).toBeDisabled()
+		expect(requests.writes).toEqual([
+			"POST /api/v1/project/123/jobs/42/reconcile",
+		])
+		expect(requests.resyncBodies).toEqual([])
 	})
 })

@@ -374,6 +374,9 @@ func (s Service) CancelJobRun(ctx context.Context, projectID string, jobID int) 
 		}
 		return fmt.Errorf("failed to find job: %s", err)
 	}
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
+	}
 
 	jobSlice := []*models.Job{job}
 	if err := cancelAllJobWorkflows(ctx, s.temporal, jobSlice, projectID); err != nil {
@@ -396,9 +399,6 @@ func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRe
 		return fmt.Errorf("failed to find job: %s", err)
 	}
 
-	if req.Activate == job.Active {
-		return nil
-	}
 	if err := ensureJobExecutionIdle(job); err != nil {
 		return err
 	}
@@ -407,6 +407,9 @@ func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRe
 		return err
 	}
 	if req.Activate {
+		if _, err := s.temporal.InspectSyncSchedule(ctx, job.ProjectID, job.ID); err != nil {
+			return err
+		}
 		if err := s.temporal.ResumeSchedule(ctx, job.ProjectID, job.ID); err != nil {
 			return fmt.Errorf("failed to unpause schedule: %s", err)
 		}
