@@ -150,7 +150,8 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 	if !reset {
 		return result, nil
 	}
-	response, err := s.temporal.Client.ResetWorkflowExecution(ctx, &workflowservice.ResetWorkflowExecutionRequest{
+	response, err := s.temporal.Client.WorkflowService().ResetWorkflowExecution(ctx, &workflowservice.ResetWorkflowExecutionRequest{
+		Namespace:                 s.temporal.Namespace,
 		WorkflowExecution:         &commonpb.WorkflowExecution{WorkflowId: result.WorkflowID, RunId: result.RunID},
 		WorkflowTaskFinishEventId: resetEvent,
 		RequestId:                 uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("olake-reconcile/%d/%s/%s/%s", jobID, result.WorkflowID, result.RunID, latestRunID))).String(),

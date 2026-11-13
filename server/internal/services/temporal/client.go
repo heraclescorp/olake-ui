@@ -18,6 +18,7 @@ import (
 type Temporal struct {
 	Client    client.Client
 	taskQueue string
+	Namespace string
 }
 
 // NewClient creates a new Temporal client
@@ -28,6 +29,9 @@ func NewClient() (*Temporal, error) {
 		return nil, fmt.Errorf("failed to get temporal address")
 	}
 
+	if cfg.TemporalNamespace == "" {
+		cfg.TemporalNamespace = client.DefaultNamespace
+	}
 	taskQueue := constants.TemporalTaskQueue
 	if cfg.TemporalExternal && cfg.TemporalTaskQueue != "" {
 		taskQueue = cfg.TemporalTaskQueue
@@ -60,6 +64,7 @@ func NewClient() (*Temporal, error) {
 		temporalClient = &Temporal{
 			Client:    c,
 			taskQueue: taskQueue,
+			Namespace: cfg.TemporalNamespace,
 		}
 		return nil
 	}, 3, time.Second)

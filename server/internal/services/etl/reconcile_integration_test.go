@@ -22,6 +22,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/grpc"
 )
 
 type recoveryHistory struct {
@@ -63,10 +64,23 @@ func (c *recoveryClient) GetWorkflowHistory(context.Context, string, string, boo
 		{EventId: 9, EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED, Attributes: &historypb.HistoryEvent_ActivityTaskFailedEventAttributes{ActivityTaskFailedEventAttributes: &historypb.ActivityTaskFailedEventAttributes{Failure: &failurepb.Failure{Message: "execution mutation outcome is not positively settled; retain job ownership"}}}},
 	}}
 }
-func (c *recoveryClient) ResetWorkflowExecution(_ context.Context, request *workflowservice.ResetWorkflowExecutionRequest) (*workflowservice.ResetWorkflowExecutionResponse, error) {
+func (c *recoveryClient) resetWorkflowExecution(_ context.Context, request *workflowservice.ResetWorkflowExecutionRequest) (*workflowservice.ResetWorkflowExecutionResponse, error) {
 	c.requests = append(c.requests, request)
 	c.latestRun, c.latestStatus = fmt.Sprintf("recovery-%d", len(c.requests)), enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
 	return &workflowservice.ResetWorkflowExecutionResponse{RunId: c.latestRun}, nil
+}
+
+func (c *recoveryClient) WorkflowService() workflowservice.WorkflowServiceClient {
+	return recoveryWorkflowService{owner: c}
+}
+
+type recoveryWorkflowService struct {
+	workflowservice.WorkflowServiceClient
+	owner *recoveryClient
+}
+
+func (s recoveryWorkflowService) ResetWorkflowExecution(ctx context.Context, request *workflowservice.ResetWorkflowExecutionRequest, _ ...grpc.CallOption) (*workflowservice.ResetWorkflowExecutionResponse, error) {
+	return s.owner.resetWorkflowExecution(ctx, request)
 }
 func (c *recoveryClient) ListWorkflow(context.Context, *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error) {
 	return &workflowservice.ListWorkflowExecutionsResponse{}, nil
@@ -119,7 +133,7 @@ func recoveryServiceFixture(t *testing.T, phase string) (Service, *models.Job, *
 	}
 	client := &recoveryClient{job: job, workflowID: workflowID, ownerRun: run, latestRun: run, status: enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED, latestStatus: enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED, command: etltemporal.Resync,
 		handle: &recoveryHandle{schedule: client.Schedule{State: &client.ScheduleState{Paused: true}, Action: &client.ScheduleWorkflowAction{ID: fmt.Sprintf("sync-%s-%d", job.ProjectID, job.ID), Workflow: etltemporal.RunSyncWorkflow, Args: []interface{}{etltemporal.ExecutionRequest{JobID: job.ID, ProjectID: job.ProjectID, Command: etltemporal.Sync}}}}}}
-	service.temporal = &etltemporal.Temporal{Client: client}
+	service.temporal = &etltemporal.Temporal{Client: client, Namespace: "test-temporal-namespace"}
 	return service, job, actor, client, connection
 }
 
@@ -142,6 +156,9 @@ func TestReconcileCanceledExecutionIsAuthorizedStableAndNeverClearsOwner(t *test
 				t.Fatalf("reset not accepted truthfully: %+v %v", accepted, err)
 			}
 			request := remote.requests[0]
+			if request.Namespace != "test-temporal-namespace" {
+				t.Fatalf("reset omitted configured Temporal namespace: %q", request.Namespace)
+			}
 			if request.WorkflowExecution.WorkflowId != remote.workflowID || request.WorkflowExecution.RunId != remote.ownerRun || request.WorkflowTaskFinishEventId != 4 || request.RequestId == "" {
 				t.Fatalf("reset did not bind original operation: %+v", request)
 			}
