@@ -17,16 +17,18 @@ import {
 	StreamEditDisabledModal,
 	AdvancedSettingsCard,
 } from "../components"
-import ResyncTableCard from "../components/ResyncTableCard"
 import AutoTableEnrollmentCard from "../components/AutoTableEnrollmentCard"
+import ExecutionRecoveryCard from "../components/ExecutionRecoveryCard"
+import ResyncTableCard from "../components/ResyncTableCard"
 import { DAYS, FREQUENCY_OPTIONS } from "../constants"
 import {
 	useClearDestinationStatus,
 	useJobDetails,
 	useUpdateJob,
 } from "../hooks"
-import { useJobConfigurationStore, useJobStore } from "../stores"
 import { useEnrollmentCapabilities } from "../hooks/useEnrollmentCapabilities"
+import { useJobExecutionRecovery } from "../hooks/useJobExecutionRecovery"
+import { useJobConfigurationStore, useJobStore } from "../stores"
 import {
 	parseCronExpression,
 	validateCronExpression,
@@ -88,6 +90,7 @@ const JobSettings: React.FC = () => {
 		staleTime: Infinity,
 		refetchOnMount: "always",
 	})
+	const recovery = useJobExecutionRecovery(jobId || "")
 	const enrollmentCatalog = useMemo(
 		() => (job ? getEnrollmentCatalog(job) : undefined),
 		[job],
@@ -368,16 +371,22 @@ const JobSettings: React.FC = () => {
 				JSON.stringify(initialEnrollmentDraft))
 	const resyncDisabledReason = !job
 		? "Job details are unavailable."
-		: isClearDestinationStatusError
-			? "Unable to check whether a destination clear is running. Try again when status is available."
-			: selectedClearDestinationRunning ||
-				  job.last_run_state?.toLowerCase() === "running"
-				? "Wait for the running sync or destination clear to finish before resyncing a table."
-				: !job.activate
-					? "Resume this paused job before resyncing a table."
-					: hasUnsavedSettings
-						? "Save or discard unsaved settings before resyncing a table. Only saved configuration is used."
-						: undefined
+		: recovery.isPending || recovery.isError
+			? "Execution ownership status is unavailable. Refresh execution recovery before resyncing."
+			: recovery.data?.status !== "idle"
+				? "This job retains an execution owner. Use Execution recovery before starting another sync or table resync."
+				: recovery.data.schedule_paused
+					? "Execution ownership is released, but the schedule remains paused. Use Resume schedule before resyncing."
+					: isClearDestinationStatusError
+						? "Unable to check whether a destination clear is running. Try again when status is available."
+						: selectedClearDestinationRunning ||
+							  job.last_run_state?.toLowerCase() === "running"
+							? "Wait for the running sync, table resync, or destination clear to finish before resyncing a table."
+							: !job.activate
+								? "Resume this paused job before resyncing a table."
+								: hasUnsavedSettings
+									? "Save or discard unsaved settings before resyncing a table. Only saved configuration is used."
+									: undefined
 
 	if (isJobLoading || isClearDestinationStatusLoading) {
 		return (
@@ -435,6 +444,15 @@ const JobSettings: React.FC = () => {
 					<div className="flex flex-1 overflow-y-auto border-t px-6">
 						<div className="mt-2 w-full pr-6 transition-all duration-300">
 							<h2 className="mb-4 text-xl font-medium">Job settings</h2>
+							<ExecutionRecoveryCard
+								jobId={jobId || ""}
+								recovery={recovery.data}
+								loading={recovery.isFetching}
+								error={recovery.error}
+								onRefresh={(): void => {
+									void recovery.refetch()
+								}}
+							/>
 
 							<div className="mb-6">
 								<div className="flex w-full flex-row justify-between gap-8 rounded-xl border border-olake-border bg-white px-6 pb-2 pt-6">

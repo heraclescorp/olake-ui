@@ -62,6 +62,7 @@ func enrollmentServiceDatabase(t *testing.T) *database.Database {
 	for _, name := range constants.TableNameMap {
 		tables = append(tables, pq.QuoteIdentifier(name))
 	}
+	tables = append(tables, pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName()))
 	t.Cleanup(func() {
 		if _, err := admin.Exec("DROP TABLE IF EXISTS " + strings.Join(tables, ",") + " CASCADE"); err != nil {
 			t.Error(err)
@@ -86,7 +87,7 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 	if err := db.CreateSource(source); err != nil {
 		t.Fatal(err)
 	}
-	destination := &models.Destination{Name: "destination", DestType: "iceberg", Version: "v1.1.1", Config: `{}`, ProjectID: "project-a", CreatedByID: actor.ID, UpdatedByID: actor.ID}
+	destination := &models.Destination{Name: "destination", DestType: "iceberg", Version: "v1.1.1", Config: resyncDestinationConfig, ProjectID: "project-a", CreatedByID: actor.ID, UpdatedByID: actor.ID}
 	if err := db.CreateDestination(destination); err != nil {
 		t.Fatal(err)
 	}

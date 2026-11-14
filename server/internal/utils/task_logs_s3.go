@@ -13,13 +13,13 @@ import (
 
 // openS3TaskLogs opens the chunk series for a source, in merge order (sync
 // first): the connector's chunks in logs/sync_*/ and the worker's in logs/worker/.
-func openS3TaskLogs(ctx context.Context, workflowDir, source string) ([]logFile, error) {
+func openS3TaskLogs(ctx context.Context, workflowDir, connectorDir, source string) ([]logFile, error) {
 	var files []logFile
-	if source == LogSourceAll || source == LogSourceSync {
-		syncFolder, err := GetAndValidateS3SyncDir(ctx, workflowDir)
+	if connectorDir != "" && (source == LogSourceAll || source == LogSourceSync) {
+		syncFolder, err := GetAndValidateS3SyncDir(ctx, connectorDir)
 		switch {
 		case err == nil:
-			f, err := openS3LogSeries(ctx, LogSourceSync, path.Join(workflowDir, "logs", syncFolder), constants.ConnectorLogPrefix)
+			f, err := openS3LogSeries(ctx, LogSourceSync, path.Join(connectorDir, "logs", syncFolder), constants.ConnectorLogPrefix)
 			if err != nil {
 				return nil, err
 			}

@@ -87,7 +87,7 @@ func (c taskLogCursor) encode() string {
 
 // ReadTaskLogs reads a page of a run's logs for the task logs page, from the
 // storage the logs live in. The cursor is opaque to the client.
-func ReadTaskLogs(ctx context.Context, baseDir, source, rawCursor string, limit int, direction string) (*dto.JobTaskLogsResponse, error) {
+func ReadTaskLogs(ctx context.Context, baseDir string, execution *ExecutionRuntimeLogIdentity, source, rawCursor string, limit int, direction string) (*dto.JobTaskLogsResponse, error) {
 	cursor, err := decodeTaskLogCursor(rawCursor)
 	if err != nil {
 		return nil, err
@@ -96,18 +96,29 @@ func ReadTaskLogs(ctx context.Context, baseDir, source, rawCursor string, limit 
 		limit = constants.DefaultLogsLimit
 	}
 	source = NormalizeLogSource(source)
+	connectorDir, _, err := ResolveExecutionRuntimeLogDirs(baseDir, execution)
+	if err != nil {
+		return nil, err
+	}
+	runtimeKey := ""
+	if connectorDir != "" && connectorDir != baseDir && source != LogSourceWorker {
+		runtimeKey = "runtime:" + filepath.Base(connectorDir)
+		if rawCursor != "" && cursor[runtimeKey] != 1 {
+			return nil, fmt.Errorf("%w: execution runtime changed; reload logs", constants.ErrInvalidLogCursor)
+		}
+	}
 
 	var files []logFile
 	if storage.Mode() == constants.StorageModeS3 {
-		files, err = openS3TaskLogs(ctx, baseDir, source)
+		files, err = openS3TaskLogs(ctx, baseDir, connectorDir, source)
 	} else {
-		files, err = openTaskLogFiles(baseDir, source)
+		files, err = openTaskLogFiles(baseDir, connectorDir, source)
 	}
 	defer closeLogFiles(files)
 	if err != nil {
 		return nil, err
 	}
-	return mergeTaskLogs(files, cursor, limit, strings.ToLower(strings.TrimSpace(direction)) != "newer")
+	return mergeTaskLogs(files, cursor, runtimeKey, limit, strings.ToLower(strings.TrimSpace(direction)) != "newer")
 }
 
 // mergeTaskLogs reads a page from the connector's and/or the worker's logs.
@@ -115,7 +126,7 @@ func ReadTaskLogs(ctx context.Context, baseDir, source, rawCursor string, limit 
 // position per source, carried in the cursor.
 // A missing source counts as empty: old workers write no worker logs, and the
 // connector creates its sync_* folder only once it starts.
-func mergeTaskLogs(files []logFile, cursor taskLogCursor, limit int, older bool) (*dto.JobTaskLogsResponse, error) {
+func mergeTaskLogs(files []logFile, cursor taskLogCursor, runtimeKey string, limit int, older bool) (*dto.JobTaskLogsResponse, error) {
 	var candidates []taskLogLine
 	for i := range files {
 		f := &files[i]
@@ -180,6 +191,9 @@ func mergeTaskLogs(files []logFile, cursor taskLogCursor, limit int, older bool)
 	}
 
 	start, next := taskLogCursor{}, taskLogCursor{}
+	if runtimeKey != "" {
+		start[runtimeKey], next[runtimeKey] = 1, 1
+	}
 	moreBeyond, moreBehind := false, false
 	for i := range files {
 		f := &files[i]
@@ -212,14 +226,14 @@ func mergeTaskLogs(files []logFile, cursor taskLogCursor, limit int, older bool)
 }
 
 // openTaskLogFiles opens the files for a source, in merge order (sync first).
-func openTaskLogFiles(baseDir, source string) ([]logFile, error) {
+func openTaskLogFiles(baseDir, connectorDir, source string) ([]logFile, error) {
 	logsDir := filepath.Join(baseDir, "logs")
 
 	type sourcePath struct{ source, path string }
 	var paths []sourcePath
-	if source == LogSourceAll || source == LogSourceSync {
-		if _, syncFolder, err := GetAndValidateFilesystemSyncDir(baseDir); err == nil {
-			paths = append(paths, sourcePath{LogSourceSync, filepath.Join(logsDir, syncFolder, constants.SyncLogFileName)})
+	if connectorDir != "" && (source == LogSourceAll || source == LogSourceSync) {
+		if _, syncFolder, err := GetAndValidateFilesystemSyncDir(connectorDir); err == nil {
+			paths = append(paths, sourcePath{LogSourceSync, filepath.Join(connectorDir, "logs", syncFolder, constants.SyncLogFileName)})
 		}
 	}
 	if source == LogSourceAll || source == LogSourceWorker {

@@ -102,6 +102,9 @@ const ResyncTableCard = ({
 	const selected = options.find(option => option.value === selectedValue)
 	const unavailableReason =
 		disabledReason ||
+		(job.source.type !== "postgres" || job.destination.type !== "iceberg"
+			? "Uninterrupted table resync supports PostgreSQL sources with Iceberg destinations only. Clear Destination is a separate destructive operation."
+			: undefined) ||
 		error ||
 		(!options.length
 			? "No tables are selected in the saved job configuration."
@@ -145,9 +148,10 @@ const ResyncTableCard = ({
 				Resync table
 			</h3>
 			<p className="mb-4 text-sm text-text-tertiary">
-				Clear and backfill one currently selected table using the saved job
-				configuration. Column-only historical backfill is not supported: save
-				your column selection before resyncing the full table.
+				For PostgreSQL sources with Iceberg destinations, rebuild one selected
+				table using the saved job configuration while its current committed data
+				remains readable. On success, publish one atomic replacement in the same
+				destination table. Other source and destination types are not supported.
 			</p>
 			<div className="flex flex-wrap items-center gap-4">
 				<Select
@@ -162,7 +166,6 @@ const ResyncTableCard = ({
 					disabled={!!unavailableReason || isPending}
 				/>
 				<Button
-					danger
 					disabled={disabled}
 					loading={isPending}
 					onClick={(): void => setConfirmOpen(true)}
@@ -183,8 +186,8 @@ const ResyncTableCard = ({
 				open={confirmOpen}
 				onCancel={(): void => setConfirmOpen(false)}
 				onOk={handleConfirm}
-				okText="Clear and resync table"
-				okButtonProps={{ danger: true, disabled }}
+				okText="Start table rebuild"
+				okButtonProps={{ disabled }}
 				confirmLoading={isPending}
 				cancelButtonProps={{ disabled: isPending }}
 				closable={!isPending}
@@ -197,25 +200,33 @@ const ResyncTableCard = ({
 					<strong>{selected?.destinationLabel}</strong>?
 				</p>
 				<Alert
-					type="warning"
+					type="info"
 					showIcon
-					message="This action cannot be undone once started."
+					message="Existing data remains readable until atomic publication."
 				/>
 				<ul className="my-4 list-disc space-y-2 pl-5">
 					<li>
-						Only this table’s destination data, index, and backfill progress
-						will be cleared. The source is not changed.
+						The source is not changed. The existing table identity and committed
+						data are retained while this table is rebuilt and caught up with CDC.
 					</li>
 					<li>
-						This reset retains other tables’ data and state, the global LSN /
-						CDC position, and the saved job configuration.
+						A rebuild failure before publication leaves the old data intact.
+						After publication, completion and checkpoint persistence may need
+						reconciliation. The job stays paused if completion cannot be confirmed.
 					</li>
 					<li>
-						CDC for the whole job waits during this operation. After the clear
-						succeeds, a normal full-job sync starts automatically and
-						re-backfills this table. Other streams retain their state and follow
-						their configured sync modes, so unfinished backfills or full-refresh
-						streams may also run. CDC catch-up follows.
+						The full saved catalog and state are used, preserving other streams’
+						checkpoints and ordinary CDC behavior. Scheduled syncs wait until the
+						operation completes successfully.
+					</li>
+					<li>
+						Readers such as Snowflake see the replacement after their usual refresh.
+						Unsupported runtimes, destinations, or schema transitions fail safely;
+						this does not resolve existing timestamp-default compatibility limits.
+					</li>
+					<li>
+						Each staging attempt is limited to 12 hours. Longer rebuilds stop
+						safely rather than risking expiration of unpublished staging files.
 					</li>
 					<li>
 						Column-only historical backfill is unsupported. Save column

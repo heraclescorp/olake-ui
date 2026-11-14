@@ -3,6 +3,7 @@ package models
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 )
 
@@ -60,5 +61,26 @@ func TestCatalogRevisionIncludesEverySavedJSONField(t *testing.T) {
 			t.Fatalf("saved field omitted from revision: %s, %v", changed, err)
 		}
 		*field = nil
+	}
+}
+
+func TestExecutionAuthorityIsNotPublicJSON(t *testing.T) {
+	workflowID, runID := "internal-operation", "internal-run"
+	raw, err := json.Marshal(Job{ExecutionWorkflowID: &workflowID, ExecutionRunID: &runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"execution_workflow_id", "execution_run_id", "execution_records"} {
+		if _, exposed := payload[field]; exposed {
+			t.Fatalf("internal execution authority exposed as %s", field)
+		}
+	}
+	raw, err = json.Marshal(JobExecutionRecord{JobID: 17, WorkflowID: workflowID, OwnerRunID: runID, Controlled: true, Phase: "handoff", HandoffToken: "private-transfer-token"})
+	if err != nil || string(raw) != `{}` {
+		t.Fatalf("execution record is public JSON: %s, %v", raw, err)
 	}
 }

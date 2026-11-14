@@ -18,6 +18,7 @@ import (
 type Temporal struct {
 	Client    client.Client
 	taskQueue string
+	Namespace string
 }
 
 // NewClient creates a new Temporal client
@@ -28,6 +29,9 @@ func NewClient() (*Temporal, error) {
 		return nil, fmt.Errorf("failed to get temporal address")
 	}
 
+	if cfg.TemporalNamespace == "" {
+		cfg.TemporalNamespace = client.DefaultNamespace
+	}
 	taskQueue := constants.TemporalTaskQueue
 	if cfg.TemporalExternal && cfg.TemporalTaskQueue != "" {
 		taskQueue = cfg.TemporalTaskQueue
@@ -60,6 +64,7 @@ func NewClient() (*Temporal, error) {
 		temporalClient = &Temporal{
 			Client:    c,
 			taskQueue: taskQueue,
+			Namespace: cfg.TemporalNamespace,
 		}
 		return nil
 	}, 3, time.Second)
@@ -150,6 +155,21 @@ func (t *Temporal) ResumeSchedule(ctx context.Context, projectID string, jobID i
 	return t.Client.ScheduleClient().GetHandle(ctx, scheduleID).Unpause(ctx, client.ScheduleUnpauseOptions{
 		Note: "user resumed the schedule",
 	})
+}
+
+func (t *Temporal) RequireUnpausedSchedule(ctx context.Context, projectID string, jobID int) error {
+	_, scheduleID := t.WorkflowAndScheduleID(projectID, jobID)
+	description, err := t.Client.ScheduleClient().GetHandle(ctx, scheduleID).Describe(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to inspect schedule: %w", err)
+	}
+	if description.Schedule.State == nil {
+		return fmt.Errorf("schedule pause state is unavailable")
+	}
+	if description.Schedule.State.Paused {
+		return fmt.Errorf("%w: schedule is paused; reconcile any pending table resync before resuming", constants.ErrJobBusy)
+	}
+	return nil
 }
 
 func (t *Temporal) DeleteSchedule(ctx context.Context, projectID string, jobID int) error {

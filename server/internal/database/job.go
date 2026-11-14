@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -178,10 +179,8 @@ func (db *Database) GetJobsByDestinationID(destIDs []int) ([]*models.Job, error)
 }
 
 // UpdateJob updates a job with the given params.
-func (db *Database) UpdateJob(jobID int, params map[string]any) error {
-	return db.conn.Model(&models.Job{}).
-		Where("id = ?", jobID).
-		Updates(params).Error
+func (db *Database) UpdateJob(ctx context.Context, jobID int, params map[string]any) error {
+	return db.idleJobMutationResult(ctx, jobID, idleJobMutation(db.conn.WithContext(ctx), jobID).Updates(params))
 }
 
 // ListLegacyCatalogJobs returns the jobs whose catalog is still only in the legacy
@@ -202,12 +201,11 @@ type ConvertedCatalog struct {
 	Selected  string
 }
 
-// SetStreamsV2Catalog stores c while the job is still legacy with c.From, so a concurrent edit (even
-// one that keeps it legacy) is never overwritten. It reports whether the job was updated: it is not
-// when the job was edited or deleted meanwhile.
-func (db *Database) SetStreamsV2Catalog(c ConvertedCatalog) (bool, error) {
-	result := db.conn.Model(&models.Job{}).
-		Where("id = ? AND available_streams_config IS NULL AND selected_streams_config IS NULL AND streams_config = ?::jsonb", c.JobID, c.From).
+// SetStreamsV2Catalog stores c only while the job is idle and still legacy with
+// c.From. Startup and source-upgrade migrations must not rewrite owned inputs.
+func (db *Database) SetStreamsV2Catalog(ctx context.Context, c ConvertedCatalog) (bool, error) {
+	result := idleJobMutation(db.conn.WithContext(ctx), c.JobID).
+		Where("available_streams_config IS NULL AND selected_streams_config IS NULL AND streams_config = ?::jsonb", c.From).
 		Updates(map[string]any{
 			"available_streams_config": c.Available,
 			"selected_streams_config":  c.Selected,
@@ -228,15 +226,8 @@ func (db *Database) DeactivateJobs(ids []int) error {
 }
 
 // Delete a job
-func (db *Database) DeleteJob(id int) error {
-	result := db.conn.Delete(&models.Job{}, "id = ?", id)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return constants.ErrJobNotFound
-	}
-	return nil
+func (db *Database) DeleteJob(ctx context.Context, id int) error {
+	return db.idleJobMutationResult(ctx, id, idleJobMutation(db.conn.WithContext(ctx), id).Delete(&models.Job{}))
 }
 
 // IsNameUniqueInProject checks if a name is unique within a project for a given table.
@@ -260,4 +251,49 @@ func (db *Database) IsNameUniqueInProject(ctx context.Context, projectID, name s
 // IsJobNameUniqueInProject checks if a job name is unique within a project.
 func (db *Database) IsJobNameUniqueInProject(ctx context.Context, projectID, jobName string) (bool, error) {
 	return db.IsNameUniqueInProject(ctx, projectID, jobName, constants.JobTable)
+}
+
+// GetJobExecutionRecord returns only the requested job/workflow authority. A nil
+// record means genuine legacy history; database failures must not enable fallback.
+func (db *Database) GetJobExecutionRecord(ctx context.Context, jobID int, workflowID string) (*models.JobExecutionRecord, error) {
+	var record models.JobExecutionRecord
+	err := db.conn.WithContext(ctx).Where("job_id = ? AND workflow_id = ?", jobID, workflowID).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func (db *Database) GetExecutionRecoverySnapshot(ctx context.Context, jobID int) (*models.Job, *models.JobExecutionRecord, error) {
+	var job models.Job
+	var record *models.JobExecutionRecord
+	err := db.conn.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Select("id", "project_id", "execution_workflow_id", "execution_run_id").Where("id = ?", jobID).First(&job).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return constants.ErrJobNotFound
+			}
+			return err
+		}
+		query := tx.Where("job_id = ?", jobID)
+		if job.ExecutionWorkflowID == nil && job.ExecutionRunID == nil {
+			query = query.Where("phase = ?", "handoff")
+		} else if job.ExecutionWorkflowID != nil && *job.ExecutionWorkflowID != "" {
+			query = query.Where("workflow_id = ?", *job.ExecutionWorkflowID)
+		} else {
+			return nil
+		}
+		var found models.JobExecutionRecord
+		if err := query.Take(&found).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		record = &found
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return &job, record, err
 }

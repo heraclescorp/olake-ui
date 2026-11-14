@@ -25,6 +25,7 @@ const (
 	OperationTestConnection   OperationKind = "test-connection"
 	OperationDiscoverCatalog  OperationKind = "discover-catalog"
 	OperationStreamDifference OperationKind = "difference"
+	OperationResync           OperationKind = "resync"
 )
 
 // pollableKinds is an allow-list: sync and clear-destination workflows have their own

@@ -59,5 +59,5 @@ func (h *Handler) ResyncTable(c *gin.Context) {
 		utils.ErrorResponse(c, status, fmt.Sprintf("failed to resync table: %s", err), err)
 		return
 	}
-	utils.SuccessResponse(c, fmt.Sprintf("table resync triggered successfully for job_id[%d]", id), nil)
+	utils.SuccessResponse(c, fmt.Sprintf("table rebuild started for job_id[%d]; existing data remains readable until atomic publication, then readers see it after their usual refresh", id), nil)
 }

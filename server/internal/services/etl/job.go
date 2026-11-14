@@ -164,7 +164,7 @@ func (s Service) CreateJob(ctx context.Context, req *dto.CreateJobRequest, proje
 
 	defer func() {
 		if err != nil {
-			if err := s.db.DeleteJob(job.ID); err != nil {
+			if err := s.db.DeleteJob(context.WithoutCancel(ctx), job.ID); err != nil {
 				logger.Errorf("failed to delete job: %s", err)
 			}
 		}
@@ -194,6 +194,12 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 	}
 	if existingJob.ProjectID != projectID {
 		return constants.ErrJobNotFound
+	}
+	if err := ensureJobExecutionIdle(existingJob); err != nil {
+		return err
+	}
+	if err := ensureNoResync(ctx, s.temporal, projectID, jobID); err != nil {
+		return err
 	}
 	existingEnabled, err := existingJob.AutoTableEnrollmentEnabled()
 	if err != nil {
@@ -243,7 +249,7 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 			return fmt.Errorf("invalid difference_streams JSON: %s", err)
 		}
 		if len(diffCatalog) > 0 {
-			if err := s.ClearDestination(ctx, projectID, jobID, differenceCatalog(req), constants.DefaultCancelSyncWaitTime, false, false); err != nil {
+			if err := s.ClearDestination(ctx, projectID, jobID, differenceCatalog(req), constants.DefaultCancelSyncWaitTime, false); err != nil {
 				return fmt.Errorf("failed to run clear destination workflow: %s", err)
 			}
 			logger.Infof("successfully triggered clear destination workflow for job %d", existingJob.ID)
@@ -294,6 +300,11 @@ func (s Service) UpdateJob(ctx context.Context, req *dto.UpdateJobRequest, proje
 }
 
 func (s Service) DeleteJob(ctx context.Context, jobID int) (string, error) {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
@@ -301,19 +312,30 @@ func (s Service) DeleteJob(ctx context.Context, jobID int) (string, error) {
 		}
 		return "", fmt.Errorf("failed to find job: %s", err)
 	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return "", err
+	}
+	if err := ensureNoResync(ctx, s.temporal, job.ProjectID, jobID); err != nil {
+		return "", err
+	}
 
 	if err = s.temporal.DeleteSchedule(ctx, job.ProjectID, job.ID); err != nil {
 		return "", fmt.Errorf("failed to delete temporal workflow: %s", err)
 	}
 
-	if err := s.db.DeleteJob(jobID); err != nil {
-		return "", fmt.Errorf("failed to delete job: %s", err)
+	if err := s.db.DeleteJob(ctx, jobID); err != nil {
+		return "", fmt.Errorf("failed to delete job: %w", err)
 	}
 
 	return job.Name, nil
 }
 
 func (s Service) SyncJob(ctx context.Context, projectID string, jobID int) (interface{}, error) {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
@@ -325,7 +347,16 @@ func (s Service) SyncJob(ctx context.Context, projectID string, jobID int) (inte
 	if !job.Active {
 		return nil, fmt.Errorf("job is paused, please unpause to run sync")
 	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return nil, err
+	}
 
+	if err := ensureNoResync(ctx, s.temporal, projectID, jobID); err != nil {
+		return nil, err
+	}
+	if err := s.temporal.RequireUnpausedSchedule(ctx, projectID, jobID); err != nil {
+		return nil, err
+	}
 	if err := s.temporal.TriggerSchedule(ctx, projectID, jobID); err != nil {
 		return nil, fmt.Errorf("failed to trigger sync: %s", err)
 	}
@@ -343,6 +374,9 @@ func (s Service) CancelJobRun(ctx context.Context, projectID string, jobID int) 
 		}
 		return fmt.Errorf("failed to find job: %s", err)
 	}
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
+	}
 
 	jobSlice := []*models.Job{job}
 	if err := cancelAllJobWorkflows(ctx, s.temporal, jobSlice, projectID); err != nil {
@@ -352,6 +386,11 @@ func (s Service) CancelJobRun(ctx context.Context, projectID string, jobID int) 
 }
 
 func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRequest, userID *int) error {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
@@ -360,11 +399,17 @@ func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRe
 		return fmt.Errorf("failed to find job: %s", err)
 	}
 
-	if req.Activate == job.Active {
-		return nil
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return err
 	}
 
+	if err := ensureNoResync(ctx, s.temporal, job.ProjectID, jobID); err != nil {
+		return err
+	}
 	if req.Activate {
+		if _, err := s.temporal.InspectSyncSchedule(ctx, job.ProjectID, job.ID); err != nil {
+			return err
+		}
 		if err := s.temporal.ResumeSchedule(ctx, job.ProjectID, job.ID); err != nil {
 			return fmt.Errorf("failed to unpause schedule: %s", err)
 		}
@@ -379,8 +424,8 @@ func (s Service) ActivateJob(ctx context.Context, jobID int, req dto.JobStatusRe
 		"updated_by_id": *userID,
 	}
 
-	if err := s.db.UpdateJob(job.ID, updateParams); err != nil {
-		return fmt.Errorf("failed to update job activation status: %s", err)
+	if err := s.db.UpdateJob(ctx, job.ID, updateParams); err != nil {
+		return fmt.Errorf("failed to update job activation status: %w", err)
 	}
 
 	return nil
@@ -398,13 +443,24 @@ func differenceCatalog(req *dto.UpdateJobRequest) types.StreamsCatalog {
 }
 
 // ClearDestination clears the streams in diff, or every selected stream of the job when diff is empty.
-func (s Service) ClearDestination(ctx context.Context, projectID string, jobID int, diff types.StreamsCatalog, syncWaitTime time.Duration, resetState, startSyncAfterClear bool) error {
+func (s Service) ClearDestination(ctx context.Context, projectID string, jobID int, diff types.StreamsCatalog, syncWaitTime time.Duration, resetState bool) error {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		return fmt.Errorf("failed to get job: %w", err)
 	}
 	if job.ProjectID != projectID {
 		return constants.ErrJobNotFound
+	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return err
+	}
+	if err := ensureNoResync(ctx, s.temporal, projectID, jobID); err != nil {
+		return err
 	}
 
 	if job.Source == nil {
@@ -442,7 +498,7 @@ func (s Service) ClearDestination(ctx context.Context, projectID string, jobID i
 
 	// for manual clear-destination, update the state file to empty object
 	if resetState {
-		if err := s.UpdateStateFile(jobID, "{}"); err != nil {
+		if err := s.UpdateStateFile(ctx, jobID, "{}"); err != nil {
 			return fmt.Errorf("failed to update state file: %s", err)
 		}
 		logger.Infof("state file updated to {} for manual clear-destination for job_id[%d]", jobID)
@@ -450,7 +506,9 @@ func (s Service) ClearDestination(ctx context.Context, projectID string, jobID i
 
 	logger.Infof("running clear destination workflow for job %d for the following streams:\n%s", job.ID, cmp.Or(diff.Streams, diff.Selected))
 
-	if err := s.temporal.ClearDestination(ctx, job, diff, startSyncAfterClear); err != nil {
+	// TriggerSchedule returns on dispatch, not clear completion. The worker may
+	// acquire this same fence once the outer job update finishes and releases it.
+	if err := s.temporal.ClearDestination(ctx, job, diff); err != nil {
 		if rerr := s.temporal.ResumeSchedule(ctx, projectID, jobID); rerr != nil {
 			return fmt.Errorf("clear destination error: %s, resume error: %s", err, rerr)
 		}
@@ -578,7 +636,7 @@ func (s Service) GetJobTasks(ctx context.Context, projectID string, jobID int) (
 		}
 
 		opType := syncWorkflowOperationType(execution)
-		jobType := utils.Ternary(opType == temporal.Sync, "sync", "clear").(string)
+		jobType := jobRunType(opType)
 		tasks = append(tasks, dto.JobTask{
 			Runtime:   runTime,
 			StartTime: startTime.Format(time.RFC3339),
@@ -594,25 +652,39 @@ func (s Service) GetJobTasks(ctx context.Context, projectID string, jobID int) (
 // GetTaskLogs returns a page of a run's logs: the connector's sync logs, the
 // worker's logs, or both merged by time (source "all").
 func (s Service) GetTaskLogs(ctx context.Context, jobID int, filePath, source, cursor string, limit int, direction string) (*dto.JobTaskLogsResponse, error) {
-	_, err := s.db.GetJobByID(jobID, true)
-	if err != nil {
-		if errors.Is(err, constants.ErrJobNotFound) {
-			return nil, fmt.Errorf("%w: %v", constants.ErrJobNotFound, err)
-		}
-		return nil, fmt.Errorf("failed to find job: %s", err)
-	}
-
-	// Get and validate base directory from file path
-	mainSyncDir, err := utils.GetAndValidateLogBaseDir(ctx, filePath)
+	baseDir, execution, err := s.resolveJobExecutionLogPaths(ctx, jobID, filePath)
 	if err != nil {
 		return nil, err
 	}
-
-	logs, err := utils.ReadTaskLogs(ctx, mainSyncDir, source, cursor, limit, direction)
+	logs, err := utils.ReadTaskLogs(ctx, baseDir, execution, source, cursor, limit, direction)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read logs: %w", err)
 	}
 	return logs, nil
+}
+
+func (s Service) resolveJobExecutionLogPaths(ctx context.Context, jobID int, workflowID string) (string, *utils.ExecutionRuntimeLogIdentity, error) {
+	job, err := s.db.GetJobByID(jobID, false)
+	if err != nil {
+		return "", nil, err
+	}
+	if !strings.HasPrefix(workflowID, fmt.Sprintf("sync-%s-%d-", job.ProjectID, job.ID)) {
+		return "", nil, constants.ErrJobNotFound
+	}
+	record, err := s.db.GetJobExecutionRecord(ctx, jobID, workflowID)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read execution log authority: %w", err)
+	}
+	var execution *utils.ExecutionRuntimeLogIdentity
+	if record != nil {
+		if record.Controlled {
+			execution = &utils.ExecutionRuntimeLogIdentity{RuntimeID: record.RuntimeID, LaunchID: record.LaunchID}
+		} else if record.RuntimeID != "" || record.LaunchID != "" {
+			return "", nil, fmt.Errorf("legacy execution record contains a controlled runtime identity; reconcile without downgrade")
+		}
+	}
+	baseDir, err := utils.GetAndValidateLogBaseDir(ctx, workflowID, execution)
+	return baseDir, execution, err
 }
 
 // TODO: frontend needs to send source id and destination id
@@ -667,7 +739,7 @@ func (s Service) buildJobResponse(job *models.Job, lastRun *JobLastRunInfo, incl
 	if lastRun != nil {
 		jobResp.LastRunTime = lastRun.StartTime.Format(time.RFC3339)
 		jobResp.LastRunState = lastRun.Status.String()
-		jobResp.LastRunType = utils.Ternary(lastRun.OperationType == temporal.Sync, "sync", "clear").(string)
+		jobResp.LastRunType = jobRunType(lastRun.OperationType)
 	}
 
 	if job.AdvancedSettings != nil && *job.AdvancedSettings != "" && *job.AdvancedSettings != "{}" {
@@ -787,12 +859,23 @@ func (s Service) UpdateSyncTelemetry(_ context.Context, req dto.UpdateSyncTeleme
 // RecoverFromClearDestination cancels stuck clear-destination workflows and restores normal sync schedule
 // This is an internal recovery API for when clear-destination gets stuck in infinite retry
 func (s Service) RecoverFromClearDestination(ctx context.Context, projectID string, jobID int) error {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
 			return fmt.Errorf("%w: %v", constants.ErrJobNotFound, err)
 		}
 		return fmt.Errorf("job not found: %s", err)
+	}
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
+	}
+	if err := ensureNoResync(ctx, s.temporal, projectID, jobID); err != nil {
+		return err
 	}
 
 	isClearRunning, executions, err := isWorkflowRunning(ctx, s.temporal, projectID, jobID, temporal.ClearDestination)
@@ -813,6 +896,13 @@ func (s Service) RecoverFromClearDestination(ctx context.Context, projectID stri
 	} else {
 		logger.Infof("no running clear-destination workflows found for job %d", jobID)
 	}
+	job, err = s.db.GetJobByID(jobID, true)
+	if err != nil {
+		return fmt.Errorf("failed to reload job after cancellation: %w", err)
+	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return err
+	}
 
 	// restore schedule back to sync workflow
 	if err := s.temporal.RestoreSyncSchedule(ctx, job); err != nil {
@@ -829,48 +919,45 @@ func (s Service) RecoverFromClearDestination(ctx context.Context, projectID stri
 	return nil
 }
 
-// StreamLogArchive creates and streams a tar.gz archive of job logs to the provided writer.
-func (s Service) StreamLogArchive(ctx context.Context, jobID int, taskLogFilePath string, writer io.Writer) error {
-	baseDir, err := utils.GetAndValidateLogBaseDir(ctx, taskLogFilePath)
+// PrepareLogArchive selects SQL authority once, before response headers. The
+// returned streamer keeps that same admitted runtime even if recovery advances.
+func (s Service) PrepareLogArchive(ctx context.Context, jobID int, workflowID string) (string, func(io.Writer) error, error) {
+	baseDir, execution, err := s.resolveJobExecutionLogPaths(ctx, jobID, workflowID)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-
-	_, err = utils.GetAndValidateSyncFolder(ctx, baseDir)
+	filename, err := utils.GetLogArchiveFilename(ctx, jobID, baseDir, execution)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-
-	logger.Infof("Starting log archive creation for job_id[%d]", jobID)
-
-	// Create streaming pipeline: tarWriter → gzipWriter → writer
-	gzipWriter := gzip.NewWriter(writer)
-	defer gzipWriter.Close()
-
-	tarWriter := tar.NewWriter(gzipWriter)
-	defer tarWriter.Close()
-
-	logger.Debugf("Adding files from %s to archive", baseDir)
-	if err := utils.AddFilesToArchive(ctx, baseDir, tarWriter); err != nil {
-		return err
-	}
-
-	logger.Infof("Successfully created log archive for job_id[%d]", jobID)
-
-	return nil
+	return filename, func(writer io.Writer) error {
+		gzipWriter := gzip.NewWriter(writer)
+		defer gzipWriter.Close()
+		tarWriter := tar.NewWriter(gzipWriter)
+		defer tarWriter.Close()
+		return utils.AddFilesToArchive(ctx, baseDir, execution, tarWriter)
+	}, nil
 }
 
-func (s Service) UpdateStateFile(jobID int, stateFile string) error {
-	_, err := s.db.GetJobByID(jobID, true)
+func (s Service) UpdateStateFile(ctx context.Context, jobID int, stateFile string) error {
+	ctx, release, err := s.db.BeginCatalogEdit(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	job, err := s.db.GetJobByID(jobID, true)
 	if err != nil {
 		if errors.Is(err, constants.ErrJobNotFound) {
 			return fmt.Errorf("%w: %v", constants.ErrJobNotFound, err)
 		}
 		return fmt.Errorf("job not found: %s", err)
 	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return err
+	}
 
-	if err := s.db.UpdateJob(jobID, map[string]any{"state": stateFile}); err != nil {
-		return fmt.Errorf("failed to update job: %s", err)
+	if err := s.db.UpdateJob(ctx, jobID, map[string]any{"state": stateFile}); err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
 	}
 
 	logger.Infof("state file updated successfully for job_id[%d] with state: %s", jobID, stateFile)

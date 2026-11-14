@@ -331,6 +331,13 @@ export const installEnrollmentFixture = async (
 					: currentJob
 		} else if (path.endsWith("/jobs/42/clear-destination")) {
 			data = { running: false }
+		} else if (path.endsWith("/jobs/42/reconcile")) {
+			data = {
+				status: "idle",
+				can_reconcile: false,
+				schedule_paused: false,
+				message: "No retained execution owner.",
+			}
 		} else if (path.endsWith("/jobs")) {
 			data = [currentJob]
 		} else if (path.endsWith("/sources")) {

@@ -190,12 +190,12 @@ func processS3Logs(ctx context.Context, syncLogDir string, chunks []logChunkFile
 
 // COMMENT: check if we can avoid copying logs into memory while building the download;
 // stream each S3 object straight into the tar writer instead.
-func addS3FilesToArchive(ctx context.Context, workflowDir string, tarWriter *tar.Writer) error {
+func addS3FilesToArchive(ctx context.Context, workflowDir, archivePrefix string, tarWriter *tar.Writer) error {
 	stateFile := path.Join(workflowDir, "state.json")
 	body, modTime, err := storage.ReadFileFromS3(ctx, "", stateFile, false)
 	if err != nil {
 		logger.Warnf("failed to add state.json to archive: %s", err)
-	} else if err := addBytesToArchive(tarWriter, "state.json", []byte(body), modTime); err != nil {
+	} else if err := addBytesToArchive(tarWriter, path.Join(archivePrefix, "state.json"), []byte(body), modTime); err != nil {
 		return err
 	}
 
@@ -228,19 +228,19 @@ func addS3FilesToArchive(ctx context.Context, workflowDir string, tarWriter *tar
 			worker.WriteString(body)
 			workerMod = modTime
 		default:
-			if err := addBytesToArchive(tarWriter, archiveName, []byte(body), modTime); err != nil {
+			if err := addBytesToArchive(tarWriter, path.Join(archivePrefix, archiveName), []byte(body), modTime); err != nil {
 				return err
 			}
 		}
 	}
 
 	if connector.Len() > 0 {
-		if err := addBytesToArchive(tarWriter, "logs/olake.log", connector.Bytes(), connectorMod); err != nil {
+		if err := addBytesToArchive(tarWriter, path.Join(archivePrefix, "logs/olake.log"), connector.Bytes(), connectorMod); err != nil {
 			return err
 		}
 	}
 	if worker.Len() > 0 {
-		if err := addBytesToArchive(tarWriter, "logs/worker.log", worker.Bytes(), workerMod); err != nil {
+		if err := addBytesToArchive(tarWriter, path.Join(archivePrefix, "logs/worker.log"), worker.Bytes(), workerMod); err != nil {
 			return err
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 	"github.com/datazip-inc/olake-ui/server/internal/models"
 	"github.com/datazip-inc/olake-ui/server/internal/models/dto"
+	"github.com/datazip-inc/olake-ui/server/internal/services/temporal"
 	"github.com/datazip-inc/olake-ui/server/internal/types"
 )
 
@@ -23,16 +24,112 @@ func (s Service) ResyncTable(ctx context.Context, projectID string, jobID int, r
 	if err != nil {
 		return fmt.Errorf("failed to get job: %w", err)
 	}
-	catalog, err := resolveTableResync(job, projectID, req)
-	if err != nil {
+	if job.ProjectID != projectID {
+		return constants.ErrJobNotFound
+	}
+	return s.startTableResync(ctx, job, req)
+}
+
+func (s Service) startTableResync(ctx context.Context, job *models.Job, req dto.ResyncTableRequest) error {
+	if _, err := resolveTableResync(job, job.ProjectID, req); err != nil {
 		return err
 	}
-	return s.ClearDestination(ctx, projectID, job.ID, catalog, 0, false, true)
+	projectID, jobID := job.ProjectID, job.ID
+	if err := s.temporal.RequireUnpausedSchedule(ctx, projectID, jobID); err != nil {
+		return err
+	}
+	if err := ensureNoResync(ctx, s.temporal, projectID, jobID); err != nil {
+		return err
+	}
+	for _, command := range []temporal.Command{temporal.Sync, temporal.ClearDestination} {
+		running, _, err := isWorkflowRunning(ctx, s.temporal, projectID, jobID, command)
+		if err != nil {
+			return fmt.Errorf("failed to check %s status: %w", command, err)
+		}
+		if running {
+			return fmt.Errorf("%w: %s is running", constants.ErrJobBusy, command)
+		}
+	}
+	if err := s.temporal.PauseSchedule(ctx, projectID, jobID); err != nil {
+		return fmt.Errorf("failed to pause schedule: %w", err)
+	}
+	if err := waitForSyncToStop(ctx, s.temporal, projectID, jobID, 0); err != nil {
+		if resumeErr := s.temporal.ResumeSchedule(ctx, projectID, jobID); resumeErr != nil {
+			return fmt.Errorf("%w; failed to resume schedule: %v", err, resumeErr)
+		}
+		return err
+	}
+	// A start error can mean Temporal accepted the request but its response was lost.
+	// Leave the ordinary schedule paused until the operation is reconciled.
+	return s.temporal.ResyncTable(ctx, job, req)
+}
+
+func ensureNoResync(ctx context.Context, t *temporal.Temporal, projectID string, jobID int) error {
+	running, _, err := isWorkflowRunning(ctx, t, projectID, jobID, temporal.Resync)
+	if err != nil {
+		return fmt.Errorf("failed to check table resync status: %w", err)
+	}
+	if running {
+		return fmt.Errorf("%w: table resync is running", constants.ErrJobBusy)
+	}
+	return nil
+}
+
+func jobRunType(command temporal.Command) string {
+	switch command {
+	case temporal.ClearDestination:
+		return "clear"
+	case temporal.Resync:
+		return "resync"
+	default:
+		return "sync"
+	}
+}
+
+func ensureJobExecutionIdle(job *models.Job) error {
+	if job.ExecutionWorkflowID != nil || job.ExecutionRunID != nil {
+		return fmt.Errorf("%w: job execution is in progress or awaiting reconciliation", constants.ErrJobBusy)
+	}
+	return nil
+}
+
+func validateAtomicResyncSupport(job *models.Job) error {
+	if job.Source == nil || job.Destination == nil {
+		return fmt.Errorf("%w: saved source and destination are required", constants.ErrInvalidResync)
+	}
+	if !strings.EqualFold(strings.TrimSpace(job.Source.Type), "postgres") || !strings.EqualFold(strings.TrimSpace(job.Destination.DestType), "iceberg") {
+		return fmt.Errorf("%w: uninterrupted table resync supports PostgreSQL sources with Iceberg REST-family destinations only; Clear Destination remains a separate destructive operation", constants.ErrInvalidResync)
+	}
+	// Match the connector's canonical destination configuration and RESTCatalogs
+	// family, including native S3 Tables. A missing catalog_type defaults to Glue
+	// in the connector and must not accidentally enter the controlled path.
+	var destination struct {
+		Type   string `json:"type"`
+		Writer struct {
+			CatalogType string `json:"catalog_type"`
+		} `json:"writer"`
+	}
+	if err := json.Unmarshal([]byte(job.Destination.Config), &destination); err != nil {
+		return fmt.Errorf("%w: invalid saved destination configuration: %v", constants.ErrInvalidResync, err)
+	}
+	if strings.EqualFold(strings.TrimSpace(destination.Type), "ICEBERG") {
+		switch strings.ToLower(strings.TrimSpace(destination.Writer.CatalogType)) {
+		case "rest", "lakekeeper", "nessie", "s3tables", "unity", "polaris", "biglake", "horizon":
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: saved destination writer.catalog_type must select a supported Iceberg REST-family catalog; Glue/default Glue and other catalogs retain their ordinary job behavior", constants.ErrInvalidResync)
 }
 
 func resolveTableResync(job *models.Job, projectID string, req dto.ResyncTableRequest) (types.StreamsCatalog, error) {
 	if job.ProjectID != projectID {
 		return types.StreamsCatalog{}, constants.ErrJobNotFound
+	}
+	if err := validateAtomicResyncSupport(job); err != nil {
+		return types.StreamsCatalog{}, err
+	}
+	if err := ensureJobExecutionIdle(job); err != nil {
+		return types.StreamsCatalog{}, err
 	}
 	if !job.Active {
 		return types.StreamsCatalog{}, fmt.Errorf("%w: please unpause to resync a table", constants.ErrJobBusy)
@@ -121,31 +218,5 @@ func tableResyncCatalog(catalog types.StreamsCatalog, req dto.ResyncTableRequest
 	default:
 		return invalid("table must use a backfill-capable sync mode, not CDC only")
 	}
-	streamSubset, err := json.Marshal([]json.RawMessage{matchedStream})
-	if err != nil {
-		return invalid("invalid saved stream metadata")
-	}
-	selectionSubset, err := json.Marshal(map[string][]json.RawMessage{req.Namespace: {matchedSelection}})
-	if err != nil {
-		return invalid("invalid saved table selection")
-	}
-	available["streams"] = streamSubset
-	selected["selected_streams"] = selectionSubset
-	if !catalog.IsSplit() {
-		available["selected_streams"] = selectionSubset
-		data, err := json.Marshal(available)
-		if err != nil {
-			return invalid("invalid saved catalog")
-		}
-		return types.StreamsCatalog{Streams: string(data)}, nil
-	}
-	availableData, err := json.Marshal(available)
-	if err != nil {
-		return invalid("invalid saved available streams")
-	}
-	selectedData, err := json.Marshal(selected)
-	if err != nil {
-		return invalid("invalid saved selected streams")
-	}
-	return types.StreamsCatalog{Available: string(availableData), Selected: string(selectedData)}, nil
+	return catalog, nil
 }

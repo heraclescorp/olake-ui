@@ -166,6 +166,21 @@ type JobResponse struct {
 	AdvancedSettings *AdvancedSettings `json:"advanced_settings,omitempty"`
 }
 
+// JobExecutionRecovery reports durable ownership, not just Temporal termination.
+type JobExecutionRecovery struct {
+	SchedulePaused bool   `json:"schedule_paused"`
+	Status         string `json:"status"`
+	WorkflowID     string `json:"workflow_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	RecoveryRunID  string `json:"recovery_run_id,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	TemporalStatus string `json:"temporal_status,omitempty"`
+	CanReconcile   bool   `json:"can_reconcile"`
+	Message        string `json:"message"`
+	LastError      string `json:"last_error,omitempty"`
+}
+
 type JobTask struct {
 	Runtime   string `json:"runtime" example:"1m30s"`
 	StartTime string `json:"start_time" example:"2024-01-09T12:00:00Z"`
