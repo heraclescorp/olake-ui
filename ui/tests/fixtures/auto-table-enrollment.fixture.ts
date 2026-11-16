@@ -20,6 +20,7 @@ interface EnrollmentFixtureOptions {
 	routing?: "dynamic" | "custom" | "conflicting" | "available-conflicting"
 	staleUpdateTypes?: UpsertType[] | null
 	refreshedUpdateTypes?: UpsertType[]
+	bulkAllDV?: boolean
 	capabilityState?: "error" | "loading"
 	readerSupports?: UpsertType[]
 	writableTypes?: UpsertType[]
@@ -132,6 +133,12 @@ export const installEnrollmentFixture = async (
 			},
 			{ stream_name: "disabled_table", disabled: true },
 		],
+	}
+	if (options.bulkAllDV) {
+		for (const entry of selected_streams.public.filter(e => !e.disabled)) {
+			entry.append_mode = false
+			entry.update_type = "dv"
+		}
 	}
 	if (options.sparseSelection) {
 		const namespace = options.sparseNamespace ?? "public"

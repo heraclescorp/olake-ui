@@ -39,6 +39,7 @@ const UpsertTypeSectionSingle = ({
 			appendMode={!!storeSelectedStream.append_mode}
 			upsertType={storeSelectedStream.update_type}
 			onChange={upsertType =>
+				upsertType !== undefined &&
 				updateUpsertType(
 					{
 						streamName: storeStream.stream.name,

@@ -9,7 +9,7 @@ interface UpsertTypeSectionBulkProps {
 	isDirty?: boolean
 	bulkAppendMode?: boolean
 	bulkUpsertType?: UpsertType
-	onBulkUpsertTypeChange?: (upsertType: UpsertType) => void
+	onBulkUpsertTypeChange?: (upsertType: UpsertType | undefined) => void
 }
 
 const UpsertTypeSectionBulk = ({
@@ -26,6 +26,7 @@ const UpsertTypeSectionBulk = ({
 		sourceVersion={sourceVersion}
 		destinationType={destinationType}
 		isSelected={true}
+		allowKeepExisting
 		isDirty={isDirty}
 		appendMode={bulkAppendMode ?? false}
 		upsertType={bulkUpsertType}

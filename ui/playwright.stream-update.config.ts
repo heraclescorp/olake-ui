@@ -4,7 +4,7 @@ import { defineConfig, devices } from "@playwright/test"
 // Docker daemon access, or production connections are required.
 export default defineConfig({
 	testDir: "./tests/flows",
-	testMatch: "paused-stream-update.spec.ts",
+	testMatch: ["paused-stream-update.spec.ts", "bulk-write-update.spec.ts"],
 	timeout: 45_000,
 	expect: { timeout: 15_000 },
 	use: {

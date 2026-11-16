@@ -28,7 +28,8 @@ interface UpsertTypeSectionViewProps {
 	isDirty?: boolean
 	appendMode: boolean
 	upsertType?: UpsertType
-	onChange: (upsertType: UpsertType) => void
+	allowKeepExisting?: boolean
+	onChange: (upsertType: UpsertType | undefined) => void
 }
 
 const UpsertTypeSectionView = ({
@@ -39,6 +40,7 @@ const UpsertTypeSectionView = ({
 	isDirty,
 	appendMode,
 	upsertType,
+	allowKeepExisting = false,
 	onChange,
 }: UpsertTypeSectionViewProps) => {
 	const isSourceUpsertSupported = isSourceIngestionModeSupported(
@@ -71,7 +73,8 @@ const UpsertTypeSectionView = ({
 	if (!isDestUpsertModeSupported || !isSourceUpsertSupported) return null
 	// upsertType is seeded from the catalog's default_stream_properties.update_mode;
 	// when absent the driver version doesn't support update_type.
-	if (appendMode || upsertType === undefined) return null
+	if (appendMode || (upsertType === undefined && !allowKeepExisting))
+		return null
 
 	return (
 		<div
@@ -107,6 +110,7 @@ const UpsertTypeSectionView = ({
 			</div>
 			<Select
 				aria-label="Upsert Type"
+				placeholder="Mixed / Keep existing delete formats"
 				disabled={!isSelected}
 				className="w-full"
 				value={upsertType}

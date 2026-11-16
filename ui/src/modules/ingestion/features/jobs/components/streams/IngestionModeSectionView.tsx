@@ -23,7 +23,7 @@ interface IngestionModeSectionViewProps {
 	destinationType?: string
 	isSelected: boolean
 	isDirty?: boolean
-	appendMode: boolean
+	appendMode: boolean | undefined
 	dedupKeyCount?: number
 	onChange: (ingestionMode: IngestionMode) => void
 }
@@ -121,7 +121,13 @@ const IngestionModeSectionView = ({
 			<Radio.Group
 				disabled={!isSelected}
 				className="mb-4 grid grid-cols-2 gap-4"
-				value={isAppendMode ? IngestionMode.APPEND : IngestionMode.UPSERT}
+				value={
+					appendMode === undefined
+						? undefined
+						: isAppendMode
+							? IngestionMode.APPEND
+							: IngestionMode.UPSERT
+				}
 				onChange={e => handleIngestionModeChange(e.target.value)}
 			>
 				<Tooltip title={isUpsertDisabled ? upsertTooltip : undefined}>
