@@ -4,7 +4,7 @@ import {
 	PencilSimpleIcon,
 } from "@phosphor-icons/react"
 import { useIsFetching } from "@tanstack/react-query"
-import { Input, Empty, Spin, Tooltip, Button } from "antd"
+import { Input, Empty, Spin, Tooltip, Button, Modal } from "antd"
 import clsx from "clsx"
 import React, { useEffect, useState, useMemo, useRef } from "react"
 import { useShallow } from "zustand/react/shallow"
@@ -29,18 +29,18 @@ import {
 	selectInitialStreamsSnapshot,
 } from "../stores/streamSelectionStore"
 import { SchemaConfigurationProps } from "../types"
+import EnrollmentConfiguration from "./EnrollmentConfiguration"
 import FilterButton from "./FilterButton"
 import BulkConfigureStreamsModal from "./modals/BulkConfigureStreamsModal"
 import DestinationDatabaseModal from "./modals/DestinationDatabaseModal"
 import StreamConfiguration from "./streams/StreamConfiguration"
 import StreamsCollapsibleList from "./streams/StreamsCollapsibleList"
+import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
 import {
 	getStreamsDataFromSourceStreamsResponse,
 	parseDiscoverResponse,
 	shouldUseFilterConfig,
 } from "../utils/streams"
-import EnrollmentConfiguration from "./EnrollmentConfiguration"
-import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
 
 const STREAM_FILTERS = ["All tables", "Selected", "Not Selected"]
 
@@ -333,6 +333,24 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 					)}
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
+					{fromJobEditFlow && (
+						<Tooltip title="Reload tables and supported delete formats using the current source configuration and target query engines.">
+							<Button
+								disabled={isLoading || !!clearDestStatus?.running}
+								onClick={() =>
+									Modal.confirm({
+										title: "Refresh streams and delete formats?",
+										content:
+											"This discards unsaved stream edits and reloads the saved selection with current source capabilities. It does not save the job, resume scheduling, or reset destination tables.",
+										okText: "Refresh streams",
+										onOk: triggerStreamsDiscovery,
+									})
+								}
+							>
+								Refresh streams
+							</Button>
+						</Tooltip>
+					)}
 					{STREAM_FILTERS.map(filter => (
 						<FilterButton
 							key={filter}

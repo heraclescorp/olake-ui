@@ -164,3 +164,26 @@ ui/
 
 Use `Suspense` from `react` for loading states on lazily loaded routes and components. The app wraps `RouterProvider` in a `Suspense` boundary with a shared loading screen.
  
+
+### Change an existing PostgreSQL/Iceberg job to source TOAST + equality deletes
+
+Requires a connector containing [olake#17](https://github.com/heraclescorp/olake/pull/17).
+
+1. Pause the job and let any current execution finish. Pausing alone does not terminate an execution; retained execution/recovery owners must be reconciled before saving edits.
+2. Edit the PostgreSQL **source**, select the updated connector version and set **TOAST Value Source** to `source` under CDC. Save/test the source. This is source-level configuration and affects jobs sharing that source; review those jobs before saving.
+3. Under **Jobs → Inactive jobs → … → Edit Streams**, open the existing job. Opening the editor already runs discovery with the current source configuration. **Refresh streams** explicitly reruns discovery when capabilities need refreshing. It asks before discarding unsaved stream edits and does not save/resume the job or clear destination data.
+4. For each selected table, choose **Ingestion Mode → Upsert** (`append_mode: false`) and **Upsert Type → Equality Deletes** (`update_type: eq`). The equality option appears only when discovery reports it as supported by the source configuration and target query engines. It is not forced into the options list.
+5. Finish and review any difference/confirmation dialogs. A delete-mode-only DV→equality transition must not request a destination reset with the updated connector. If a reset is unexpectedly requested, cancel rather than approving it. Saving retains the paused state; resume separately after validating the configuration.
+
+Keep the existing source replication slot, job checkpoint and destination table. Do not use Clear Destination or table resync for this migration. Source-based TOAST lookups return current source values, not guaranteed historical WAL row images.
+
+Run the isolated browser regression tests with:
+
+```sh
+cd ui
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm exec playwright test --config playwright.stream-update.config.ts
+```
+
+These tests serve the real UI locally and intercept API calls; they do not validate a live Temporal/backend/AWS deployment.

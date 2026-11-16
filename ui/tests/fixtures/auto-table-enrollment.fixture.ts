@@ -19,6 +19,7 @@ interface EnrollmentFixtureOptions {
 	sourceType?: string
 	routing?: "dynamic" | "custom" | "conflicting" | "available-conflicting"
 	staleUpdateTypes?: UpsertType[] | null
+	refreshedUpdateTypes?: UpsertType[]
 	capabilityState?: "error" | "loading"
 	readerSupports?: UpsertType[]
 	writableTypes?: UpsertType[]
@@ -383,6 +384,16 @@ export const installEnrollmentFixture = async (
 		} else if (path.endsWith("/operations/fixture-difference/result")) {
 			data = { difference_streams: { selected_streams: {} } }
 		} else if (path.endsWith("/operations/fixture-discovery/result")) {
+			const refreshedStreams =
+				options.refreshedUpdateTypes && requests.discoveries.length > 1
+					? streams.map(entry => ({
+							...entry,
+							stream: {
+								...entry.stream,
+								available_update_types: options.refreshedUpdateTypes,
+							},
+						}))
+					: streams
 			const discoveredSelection = discoveryIsNew
 				? {
 						public: [
@@ -402,12 +413,12 @@ export const installEnrollmentFixture = async (
 				options.format === "split"
 					? {
 							streams_config: null,
-							available_streams: { streams },
+							available_streams: { streams: refreshedStreams },
 							selected_streams: { selected_streams: discoveredSelection },
 						}
 					: {
 							streams_config: {
-								streams,
+								streams: refreshedStreams,
 								selected_streams: discoveredSelection,
 							},
 							available_streams: null,

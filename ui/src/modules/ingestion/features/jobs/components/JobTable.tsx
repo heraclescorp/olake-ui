@@ -99,7 +99,9 @@ const JobTable: React.FC<JobTableProps> = ({
 										key: "edit",
 										icon: <PencilSimpleIcon className="size-4" />,
 										label: "Edit Streams",
-										disabled: !j.activate,
+										// Pausing stops scheduling, not configuration edits. The API also
+										// fences retained execution owners and resync/clear workflows.
+										disabled: j.last_run_state?.toLowerCase() === "running",
 										onClick: () => onEdit(record.id.toString()),
 									},
 									{
