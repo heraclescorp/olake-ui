@@ -120,3 +120,50 @@ for (const format of ["legacy", "split"] as const) {
 		})
 	}
 }
+
+for (const format of ["legacy", "split"] as const) {
+	test(`${format}: reverting ingestion mode to saved Append is not a change`, async ({
+		page,
+	}) => {
+		const r = await installEnrollmentFixture(page, { format })
+		await page.goto("/jobs/42/edit")
+		await page
+			.getByRole("button", { name: "Bulk Configure", exact: true })
+			.click()
+		const d = page.getByRole("dialog")
+		await d.getByRole("checkbox", { name: "orders", exact: true }).check()
+		await d
+			.getByRole("button", { name: "Configure Streams", exact: true })
+			.click()
+		await d.getByText("Ingestion Settings", { exact: true }).click()
+		await expect(
+			d.getByRole("radio", { name: "Append", exact: true }),
+		).toBeChecked()
+		await d.getByRole("radio", { name: "Upsert", exact: true }).check()
+		await expect(
+			d.getByRole("button", { name: "Review Changes", exact: true }),
+		).toBeEnabled()
+		await d.getByRole("radio", { name: "Append", exact: true }).check()
+		await expect(
+			d.getByRole("button", { name: "Review Changes", exact: true }),
+		).toBeDisabled()
+		expect(r.updates).toHaveLength(0)
+		// A real unrelated change must not resurrect ingestion mode in the summary.
+		await d.getByRole("switch", { name: "Normalization", exact: true }).click()
+		await d.getByRole("button", { name: "Review Changes", exact: true }).click()
+		await expect(d.getByText("Ingestion Mode:", { exact: true })).toHaveCount(0)
+		await d.getByRole("button", { name: "Apply Changes", exact: true }).click()
+		await expect(d).toHaveCount(0, { timeout: 10000 })
+		await page.getByRole("button", { name: "Finish", exact: true }).click()
+		await expect.poll(() => r.updates.length).toBe(1)
+		const u = r.updates[0]
+		const c = JSON.parse(
+			(format === "split" ? u.selected_streams_config : u.streams_config)!,
+		)
+		expect(
+			c.selected_streams.public.find(
+				(s: { stream_name: string }) => s.stream_name === "orders",
+			),
+		).toMatchObject({ append_mode: true, normalization: true })
+	})
+}

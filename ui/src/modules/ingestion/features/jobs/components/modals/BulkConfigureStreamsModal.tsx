@@ -880,7 +880,11 @@ const BulkConfigureStreamsModal = ({
 																	}
 																	onBulkIngestionModeChange={value => {
 																		setBulkConfigField("appendMode", value)
-																		markDirty(BulkDirtyFieldKey.AppendMode)
+																		setDirtyFields(prev => ({
+																			...prev,
+																			[BulkDirtyFieldKey.AppendMode]:
+																				value !== savedWriteSettings.append,
+																		}))
 																	}}
 																/>
 																{isKafka &&
@@ -912,9 +916,11 @@ const BulkConfigureStreamsModal = ({
 																		setDirtyFields(prev => ({
 																			...prev,
 																			[BulkDirtyFieldKey.UpsertType]:
-																				value !== undefined,
+																				value !== undefined &&
+																				value !== savedWriteSettings.type,
 																			...(value !== undefined && {
-																				[BulkDirtyFieldKey.AppendMode]: true,
+																				[BulkDirtyFieldKey.AppendMode]:
+																					savedWriteSettings.append !== false,
 																			}),
 																		}))
 																		if (value !== undefined)
