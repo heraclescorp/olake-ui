@@ -187,3 +187,15 @@ pnpm exec playwright test --config playwright.stream-update.config.ts
 ```
 
 These tests serve the real UI locally and intercept API calls; they do not validate a live Temporal/backend/AWS deployment.
+
+### Force a PostgreSQL CDC checkpoint
+
+1. Pause the PostgreSQL job and wait for all sync, clear, resync and cleanup work to settle.
+2. Open the job's actions menu and choose **Force set CDC LSN**.
+3. Enter the desired LSN, then **Preview checkpoint**. Review the current/new LSN and automatically derived selected CDC tables. All listed tables will be marked backfill-complete.
+4. Independently verify that every listed table has a complete baseline, the replication slot is compatible with the checkpoint, and the required WAL is retained. Moving forward can skip data; replay can duplicate rows, especially in Append mode. This action cannot rewind a slot or bypass connector validation.
+5. Check the baseline acknowledgement and type the exact `FORCE <LSN>` phrase, then choose **Force set LSN**.
+6. Record the displayed backup ID. The previous checkpoint is retained in the UI database's job checkpoint-backup table; restoration currently requires an operator, not this dialog.
+7. The job remains paused. Resume separately only after verification. Confirm startup uses the intended checkpoint and skips completed backfills. No source/destination connection, sync, clear, or slot advance is performed by the force action itself.
+
+Deploy both the frontend and server changes. Server startup must be permitted to create the checkpoint-backup table through its existing migration path; a backup-write failure prevents the checkpoint update. Only state version 8 (or an empty state) is supported.
