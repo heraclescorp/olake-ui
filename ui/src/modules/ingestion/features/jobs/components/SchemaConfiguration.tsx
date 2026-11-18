@@ -30,6 +30,7 @@ import {
 } from "../stores/streamSelectionStore"
 import { SchemaConfigurationProps } from "../types"
 import EnrollmentConfiguration from "./EnrollmentConfiguration"
+import CatalogSortConfiguration from "./CatalogSortConfiguration"
 import FilterButton from "./FilterButton"
 import BulkConfigureStreamsModal from "./modals/BulkConfigureStreamsModal"
 import DestinationDatabaseModal from "./modals/DestinationDatabaseModal"
@@ -268,6 +269,10 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 					stepTitle={stepTitle}
 				/>
 			)}
+			<CatalogSortConfiguration
+				destinationType={destinationType}
+				disabled={isLoading || !!clearDestStatus?.running}
+			/>
 
 			<div className="mb-4 mr-4 flex flex-wrap items-center justify-between gap-y-3">
 				<div className="flex items-center gap-4">
@@ -373,13 +378,15 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 
 			<div
 				className={clsx(
-					"relative flex min-h-[720px]",
+					"relative flex min-h-[720px] flex-col lg:flex-row",
 					!isLoading && "rounded-[4px] border",
 				)}
 			>
 				<div
 					className={clsx(
-						activeStreamData ? "absolute inset-y-0 left-0 w-1/2" : "w-full",
+						activeStreamData
+							? "w-full lg:absolute lg:inset-y-0 lg:left-0 lg:w-1/2"
+							: "w-full",
 						"overflow-y-auto",
 					)}
 				>
@@ -412,8 +419,8 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 
 				<div
 					className={clsx(
-						"sticky top-0 ml-auto flex w-1/2 flex-col rounded-[4px] bg-white p-4 transition-all duration-150 ease-linear",
-						!isLoading && "border-l",
+						"sticky top-0 flex w-full flex-col rounded-[4px] bg-white p-4 transition-all duration-150 ease-linear lg:ml-auto lg:w-1/2",
+						!isLoading && "border-t lg:border-l lg:border-t-0",
 					)}
 				>
 					{activeStreamData ? (

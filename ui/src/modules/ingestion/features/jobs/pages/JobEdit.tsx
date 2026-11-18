@@ -333,6 +333,7 @@ const JobEdit: React.FC = () => {
 		const streamValidationError = validateStreams(
 			streamsData,
 			sourceSnapshot.type,
+			getConnectorInLowerCase(destinationSnapshot.type),
 		)
 		if (streamValidationError) {
 			message.error(streamValidationError)
@@ -388,7 +389,12 @@ const JobEdit: React.FC = () => {
 
 		// Store data when the streams step ran; otherwise the stored catalog is resent
 		const submitValidationError =
-			streamsData && validateStreams(streamsData, sourceSnapshot.type)
+			streamsData &&
+			validateStreams(
+				streamsData,
+				sourceSnapshot.type,
+				getConnectorInLowerCase(destinationSnapshot.type),
+			)
 		if (submitValidationError) {
 			message.error(submitValidationError)
 			return

@@ -7,6 +7,60 @@
 http://localhost:8080
 ```
 
+## Creation-time Iceberg sort order
+
+Catalogs can carry an optional `default_sort_order`. In split format it belongs in
+`selected_streams_config` alongside `selected_streams`; in legacy format it belongs
+at the root of `streams_config`. It is not part of `available_streams_config`.
+
+```json
+{
+  "default_sort_order": [
+    { "column": "created_at", "direction": "asc", "null_order": "nulls-last" }
+  ],
+  "selected_streams": {
+    "public": [
+      { "stream_name": "orders", "partition_regex": "", "normalization": true },
+      { "stream_name": "audit", "partition_regex": "", "sort_order": [] },
+      {
+        "stream_name": "events",
+        "partition_regex": "",
+        "normalization": true,
+        "sort_order": [
+          { "column": "event_name", "direction": "asc", "null_order": "nulls-last" },
+          { "column": "created_at", "direction": "desc", "null_order": "nulls-last" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+An omitted per-stream `sort_order` inherits the catalog default; `[]` explicitly
+requests unsorted tables. Nonempty per-stream arrays override the default in the
+specified order. Directions are `asc` or `desc`; null ordering is `nulls-first` or
+`nulls-last`. Columns identify source fields and resolve through normal destination
+column naming. Explicit keys must be unique, selected, present and supported.
+
+The opt-in `created_at` default skips incompatible streams rather than failing the
+job. Save/reopen, stream refresh and automatic enrollment retain the policy and
+explicit overrides. No policy is enabled for existing catalogs merely by upgrading.
+
+This configures sort metadata only when a normalized native Iceberg table is first
+created. Existing tables keep their UUID, data, schema, partitioning and sort order;
+saving this option does not request a clear, resync, migration or historical rewrite.
+A new job targeting an existing table does not create a new layout. Use a separate
+destination namespace for separate tables. Background compaction may apply the
+configured order; newly written files are not guaranteed to be immediately sorted.
+
+Fresh discovery advertises `streams[].stream.supports_iceberg_sort_order: true`
+for sort-aware connector builds. The UI uses this capability, not mutable version
+tags, before enabling sort controls. Catalogs without the marker retain their
+saved settings but require a matching connector and stream refresh before an active
+sort policy can be saved. The marker belongs to discovered stream definitions in
+the legacy catalog or split available catalog; default policy remains selection-owned.
+
+
 ## Async operations
 
 Spec (`sources/spec`, `destinations/spec`), test connection (`sources/test`, `destinations/test`),

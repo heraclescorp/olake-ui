@@ -14,11 +14,13 @@ import { Button, Modal, Tooltip } from "antd"
 import clsx from "clsx"
 import { useEffect, useMemo, useState } from "react"
 
+import { DESTINATION_INTERNAL_TYPES } from "@/modules/ingestion/common/constants"
 import {
 	FilterConfig,
 	StreamIdentifier,
 	SyncMode,
 	UpsertType,
+	SortField,
 } from "@/modules/ingestion/common/types"
 import { isKafkaSource } from "@/modules/ingestion/common/utils"
 import { BulkConfigureStreamsModalProps } from "@/modules/ingestion/features/jobs/types"
@@ -44,6 +46,8 @@ import PartitionRegexSectionBulk from "../streams/PartitionRegexSectionBulk"
 import SourceNamingConventionSectionBulk from "../streams/SourceNamingConventionSectionBulk"
 import SyncModeSectionBulk from "../streams/SyncModeSectionBulk"
 import UpsertTypeSectionBulk from "../streams/UpsertTypeSectionBulk"
+import SortOrderEditor from "../streams/SortOrderEditor"
+import { getBulkSortConfiguration } from "../../utils/sortOrder"
 
 type BulkConfigureStep =
 	| "select-streams"
@@ -64,6 +68,7 @@ type BulkConfig = {
 	filterConfig: FilterConfig | undefined
 	partitionRegex: string
 	useSourceColumnNames: boolean
+	sortOrder: SortField[] | undefined
 }
 
 enum BulkDirtyFieldKey {
@@ -76,6 +81,7 @@ enum BulkDirtyFieldKey {
 	Filter = "filter",
 	PartitionRegex = "partitionRegex",
 	UseSourceColumnNames = "useSourceColumnNames",
+	SortOrder = "sortOrder",
 }
 
 type BulkDirtyFields = Record<BulkDirtyFieldKey, boolean>
@@ -90,6 +96,7 @@ const INITIAL_DIRTY_FIELDS: BulkDirtyFields = {
 	[BulkDirtyFieldKey.Filter]: false,
 	[BulkDirtyFieldKey.PartitionRegex]: false,
 	[BulkDirtyFieldKey.UseSourceColumnNames]: false,
+	[BulkDirtyFieldKey.SortOrder]: false,
 }
 
 const INITIAL_BULK_CONFIG: BulkConfig = {
@@ -104,6 +111,7 @@ const INITIAL_BULK_CONFIG: BulkConfig = {
 	filterConfig: undefined,
 	partitionRegex: "",
 	useSourceColumnNames: false,
+	sortOrder: undefined,
 }
 
 const CLOSE_COUNTDOWN = 3
@@ -164,6 +172,18 @@ const BulkConfigureStreamsModal = ({
 	// Only dirty sections are included in the apply payload.
 	const [dirtyFields, setDirtyFields] =
 		useState<BulkDirtyFields>(INITIAL_DIRTY_FIELDS)
+	const bulkSort = getBulkSortConfiguration({
+		catalog: streamsData,
+		streams: bulkSelectedStreams,
+		order: bulkConfig.sortOrder,
+		normalization: dirtyFields[BulkDirtyFieldKey.Normalization]
+			? bulkConfig.normalization
+			: undefined,
+		destinationType,
+	})
+	const sortError = dirtyFields[BulkDirtyFieldKey.SortOrder]
+		? bulkSort.error
+		: null
 
 	const markDirty = (key: BulkDirtyFieldKey) =>
 		setDirtyFields(prev => ({ ...prev, [key]: true }))
@@ -267,6 +287,7 @@ const BulkConfigureStreamsModal = ({
 			filterConfig: undefined,
 			partitionRegex: "",
 			useSourceColumnNames: false,
+			sortOrder: undefined,
 		})
 		setDirtyFields(INITIAL_DIRTY_FIELDS)
 		setIsSyncIngestionCollapsed(true)
@@ -341,6 +362,9 @@ const BulkConfigureStreamsModal = ({
 			...(dirtyFields[BulkDirtyFieldKey.UseSourceColumnNames] && {
 				useSourceColumnNames: bulkConfig.useSourceColumnNames,
 			}),
+			...(dirtyFields[BulkDirtyFieldKey.SortOrder] && {
+				sortOrder: bulkConfig.sortOrder,
+			}),
 		})
 
 		setCloseCountdown(CLOSE_COUNTDOWN)
@@ -410,7 +434,7 @@ const BulkConfigureStreamsModal = ({
 								<Button
 									type="primary"
 									onClick={handleApplyChanges}
-									disabled={missingUpsertDedupKeys}
+									disabled={missingUpsertDedupKeys || !!sortError}
 								>
 									Apply Changes
 								</Button>
@@ -432,7 +456,8 @@ const BulkConfigureStreamsModal = ({
 						disabled={
 							bulkSelectedStreams.length === 0 ||
 							!Object.values(dirtyFields).some(Boolean) ||
-							missingUpsertDedupKeys
+							missingUpsertDedupKeys ||
+							!!sortError
 						}
 					>
 						Review Changes
@@ -633,6 +658,13 @@ const BulkConfigureStreamsModal = ({
 													destinationType={destinationType}
 													normalization={bulkConfig.normalization}
 													dropRemovedColumns={bulkConfig.dropRemovedColumns}
+												/>
+											)}
+											{dirtyFields[BulkDirtyFieldKey.SortOrder] && (
+												<SortOrderEditor
+													order={bulkConfig.sortOrder}
+													columns={bulkSort.columns}
+													inheritanceDescription="Inherit the catalog default, including future changes."
 												/>
 											)}
 											{dirtyFields[BulkDirtyFieldKey.Filter] && (
@@ -955,6 +987,55 @@ const BulkConfigureStreamsModal = ({
 															markDirty(BulkDirtyFieldKey.DropRemovedColumns)
 														}}
 													/>
+
+													{destinationType ===
+														DESTINATION_INTERNAL_TYPES.ICEBERG && (
+														<div className="flex flex-col gap-2">
+															<p className="text-xs text-olake-text-secondary">
+																{dirtyFields[BulkDirtyFieldKey.SortOrder]
+																	? "Sort policy will be applied to all selected tables."
+																	: "Keep existing sort policies unless you change this section."}{" "}
+																Custom columns must be eligible in every
+																selected table.
+															</p>
+															<SortOrderEditor
+																order={bulkConfig.sortOrder}
+																columns={bulkSort.columns}
+																disabled={bulkSort.disabled}
+																disabledReason={bulkSort.disabledReason}
+																inheritanceDescription="Inherited tables follow the catalog default; explicit overrides remain unchanged until applied."
+																error={sortError}
+																onChange={(order): void => {
+																	setBulkConfigField("sortOrder", order)
+																	markDirty(BulkDirtyFieldKey.SortOrder)
+																}}
+															/>
+															{dirtyFields[BulkDirtyFieldKey.SortOrder] && (
+																<Button
+																	onClick={(): void =>
+																		setDirtyFields(prev => ({
+																			...prev,
+																			[BulkDirtyFieldKey.SortOrder]: false,
+																		}))
+																	}
+																>
+																	Keep existing sort settings
+																</Button>
+															)}
+															{!dirtyFields[BulkDirtyFieldKey.SortOrder] &&
+																!bulkSort.disabled && (
+																	<Button
+																		onClick={(): void => {
+																			setBulkConfigField("sortOrder", undefined)
+																			markDirty(BulkDirtyFieldKey.SortOrder)
+																		}}
+																	>
+																		Reset selected tables to inherited sort
+																		policy
+																	</Button>
+																)}
+														</div>
+													)}
 
 													{/* Data Filter Section */}
 													<DataFilterSectionBulk

@@ -52,6 +52,7 @@ import {
 	validateFilterConfig,
 } from "./filterUtils"
 import { fromLegacyCatalog, toLegacyStreamsConfig } from "./legacyStreams"
+import { validateCatalogSortOrders } from "./sortOrder"
 
 // The catalog carries the default upsert type on the stream as
 // default_stream_properties.update_type; the selected stream stores it as
@@ -86,7 +87,23 @@ export const getStreamsDataFromSourceStreamsResponse = (
 	currentAvailableUpdateTypes?: UpsertType[],
 	preserveSelectedSettings = false,
 ): StreamsDataStructure => {
-	const mergedSelectedStreams: SelectedStreamsByNamespace = {}
+	const discoveredNames = new Map<string, Set<string>>()
+	for (const { stream } of response.available_streams.streams) {
+		const namespace = stream.namespace ?? ""
+		const names = discoveredNames.get(namespace) ?? new Set<string>()
+		names.add(stream.name)
+		discoveredNames.set(namespace, names)
+	}
+	const mergedSelectedStreams: SelectedStreamsByNamespace = Object.fromEntries(
+		Object.entries(response.selected_streams ?? {}).map(
+			([namespace, entries]) => [
+				namespace,
+				entries.filter(
+					entry => !discoveredNames.get(namespace)?.has(entry.stream_name),
+				),
+			],
+		),
+	)
 
 	const isDestUpsertModeSupported = isDestinationIngestionModeSupported(
 		IngestionMode.UPSERT,
@@ -240,6 +257,8 @@ export const getStreamsDataFromSourceStreamsResponse = (
 	})
 
 	return {
+		default_sort_order: response.default_sort_order,
+		catalogMetadata: response.catalogMetadata,
 		streams: response.available_streams.streams,
 		selected_streams: mergedSelectedStreams,
 	}
@@ -290,7 +309,23 @@ const getSelectedStreams = (
 export const formatSelectedStreamsPayload = (
 	streamsConfig: StreamsDataStructure,
 ): SelectedStreamsByNamespace => {
-	const filteredStreams = getSelectedStreams(streamsConfig.selected_streams)
+	const discovered = new Set(
+		streamsConfig.streams.map(({ stream }) =>
+			JSON.stringify([stream.namespace ?? "", stream.name]),
+		),
+	)
+	const filteredStreams: SelectedStreamsByNamespace = Object.fromEntries(
+		Object.entries(streamsConfig.selected_streams).map(
+			([namespace, entries]) => [
+				namespace,
+				entries.filter(
+					entry =>
+						!entry.disabled ||
+						!discovered.has(JSON.stringify([namespace, entry.stream_name])),
+				),
+			],
+		),
+	)
 
 	const typeSchemaByName = new Map(
 		streamsConfig.streams?.map(s => [
@@ -336,22 +371,31 @@ export const formatSelectedStreamsPayload = (
 // job (existing job) is on streams v2; the frontend needs no version check.
 export const parseDiscoverResponse = (
 	response: DiscoverResponse,
-): { format: CatalogFormat; response: StreamsV2Catalog } =>
-	response.available_streams
-		? {
-				format: CatalogFormat.V2,
-				response: {
-					available_streams: response.available_streams,
-					// selected_streams is the selected_streams.json file, so unwrap it
-					selected_streams: response.selected_streams?.selected_streams ?? {},
+): { format: CatalogFormat; response: StreamsV2Catalog } => {
+	if (response.available_streams) {
+		const { streams, ...availableMetadata } = response.available_streams
+		const { selected_streams, default_sort_order, ...selectedMetadata } =
+			response.selected_streams ?? { selected_streams: {} }
+		return {
+			format: CatalogFormat.V2,
+			response: {
+				available_streams: { ...availableMetadata, streams },
+				selected_streams,
+				default_sort_order,
+				catalogMetadata: {
+					available: availableMetadata,
+					selected: selectedMetadata,
 				},
-			}
-		: {
-				format: CatalogFormat.LEGACY,
-				response: fromLegacyCatalog(
-					response.streams_config ?? { streams: [], selected_streams: {} },
-				),
-			}
+			},
+		}
+	}
+	return {
+		format: CatalogFormat.LEGACY,
+		response: fromLegacyCatalog(
+			response.streams_config ?? { streams: [], selected_streams: {} },
+		),
+	}
+}
 
 // streams[] is never edited, so it is the discover output as-is.
 export const buildCatalogPayload = (
@@ -365,8 +409,13 @@ export const buildCatalogPayload = (
 		}
 	}
 	return {
-		available_streams_config: JSON.stringify({ streams: streamsData.streams }),
+		available_streams_config: JSON.stringify({
+			...streamsData.catalogMetadata?.available,
+			streams: streamsData.streams,
+		}),
 		selected_streams_config: JSON.stringify({
+			...streamsData.catalogMetadata?.selected,
+			default_sort_order: streamsData.default_sort_order,
 			selected_streams: selectedStreams,
 		}),
 	}
@@ -497,7 +546,13 @@ export const withIndexRequired = (
 export const validateStreams = (
 	streamsConfig: StreamsDataStructure,
 	sourceType: string,
+	destinationType?: string,
 ): string | null => {
+	const sortError = validateCatalogSortOrders(streamsConfig, destinationType)
+	if (sortError) {
+		return sortError
+	}
+
 	// Map typeSchemaProperties by stream name for quick lookup
 	const typeSchemaByName = new Map(
 		streamsConfig.streams?.map(s => [

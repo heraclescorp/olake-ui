@@ -23,9 +23,9 @@ func TestClearDestinationWorkerRequestStagesScopedCatalog(t *testing.T) {
 	constants.DefaultConfigDir = t.TempDir()
 	t.Cleanup(func() { constants.DefaultConfigDir = previous })
 	full := `{"streams":[{"stream":{"namespace":"public","name":"orders"}},{"stream":{"namespace":"other","name":"orders"}}],"selected_streams":{"public":[{"stream_name":"orders"}],"other":[{"stream_name":"orders"}]}}`
-	available := `{"streams":[{"stream":{"namespace":"public","name":"orders","destination_table":"saved_target","json_schema":{"type":"object"}}}]}`
-	selected := `{"selected_streams":{"public":[{"stream_name":"orders","sync_mode":"cdc","destination_table":"saved_target","selected_columns":{"columns":["amount"]}}]}}`
-	legacy := `{"streams":[{"stream":{"namespace":"public","name":"orders","destination_table":"saved_target","json_schema":{"type":"object"}}}],"selected_streams":{"public":[{"stream_name":"orders","sync_mode":"cdc","destination_table":"saved_target","selected_columns":{"columns":["amount"]}}]}}`
+	available := `{"streams":[{"stream":{"namespace":"public","name":"orders","supports_iceberg_sort_order":true,"destination_table":"saved_target","json_schema":{"type":"object"}}}]}`
+	selected := `{"default_sort_order":[{"column":"created_at","direction":"asc","null_order":"nulls-last"}],"extension":{"keep":9007199254740993},"selected_streams":{"public":[{"stream_name":"orders","sort_order":[],"sync_mode":"cdc","destination_table":"saved_target","selected_columns":{"columns":["amount"]}}]}}`
+	legacy := `{"default_sort_order":[{"column":"created_at","direction":"asc","null_order":"nulls-last"}],"extension":{"keep":9007199254740993},"streams":[{"stream":{"namespace":"public","name":"orders","supports_iceberg_sort_order":true,"destination_table":"saved_target","json_schema":{"type":"object"}}}],"selected_streams":{"public":[{"stream_name":"orders","sort_order":[],"sync_mode":"cdc","destination_table":"saved_target","selected_columns":{"columns":["amount"]}}]}}`
 	for _, split := range []bool{false, true} {
 		name := map[bool]string{false: "legacy", true: "split"}[split]
 		t.Run(name, func(t *testing.T) {

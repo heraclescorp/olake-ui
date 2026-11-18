@@ -2,6 +2,10 @@ import type { Page } from "@playwright/test"
 
 import { UpsertType } from "../../src/modules/ingestion/common/types"
 import type {
+	SelectedStreams,
+	SortField,
+} from "../../src/modules/ingestion/common/types"
+import type {
 	AutoTableEnrollmentPolicy,
 	Job,
 	JobBase,
@@ -29,6 +33,17 @@ interface EnrollmentFixtureOptions {
 	sparseDestinationDatabase?: string
 	sparseNamespace?: string
 	sparsePolicy?: boolean
+	sortScenario?: boolean
+	defaultSortOrder?: SortField[]
+	sortOrder?: SortField[]
+	destinationType?: string
+	unsupportedSortConnector?: boolean
+	excludeCreatedAt?: boolean
+	malformedSortField?: "direction" | "null-order"
+	normalizedSortNames?: boolean
+	preserveSortSourceNames?: boolean
+	ambiguousSortNames?: boolean
+	refreshedSortSupport?: boolean
 }
 
 export interface EnrollmentFixtureRequests {
@@ -74,6 +89,7 @@ export const installEnrollmentFixture = async (
 		["public", "disabled_table"],
 		["public", "known_unselected"],
 		["archive", "unselected_history"],
+		...(options.sortScenario ? [["public", "excluded_time"]] : []),
 		...(options.sparseSelection
 			? [[options.sparseNamespace ?? "public", "sparse_saved"]]
 			: []),
@@ -85,8 +101,33 @@ export const installEnrollmentFixture = async (
 			name,
 			namespace,
 			json_schema: { properties: { id: { type: "integer" } } },
-			type_schema: { properties: { id: { type: ["integer"] } } },
+			type_schema: {
+				properties:
+					options.sortScenario && name !== "unselected_history"
+						? {
+								id: { type: ["integer"] },
+								[options.normalizedSortNames && name === "orders"
+									? "Created At"
+									: "created_at"]: {
+									type: [
+										name === "previously_enrolled"
+											? "string"
+											: "timestamp_micro",
+										"null",
+									],
+								},
+								...(options.ambiguousSortNames && name === "orders"
+									? { "Created-At": { type: ["timestamp_micro"] } }
+									: {}),
+								priority: { type: ["integer"] },
+								payload: { type: ["object"] },
+								_olake_sort_fixture: { type: ["integer"], olake_column: true },
+							}
+						: { id: { type: ["integer"] } },
+			},
 			supported_sync_modes: ["cdc", "full_refresh"],
+			supports_iceberg_sort_order:
+				!!options.sortScenario && !options.unsupportedSortConnector,
 			sync_mode: "cdc",
 			destination_database:
 				name === "sparse_saved"
@@ -96,7 +137,7 @@ export const installEnrollmentFixture = async (
 						: `saved:${namespace}`,
 			destination_table: `${name}_saved`,
 			default_stream_properties: {
-				normalization: false,
+				normalization: !!options.sortScenario,
 				append_mode: true,
 				update_type: "eq",
 			},
@@ -134,6 +175,84 @@ export const installEnrollmentFixture = async (
 			{ stream_name: "disabled_table", disabled: true },
 		],
 	}
+	if (options.sortScenario) {
+		for (const { stream } of streams) {
+			if (stream.namespace === "public") {
+				stream.destination_database = selectedDatabase
+			}
+		}
+		selected_streams.public[0] = {
+			...selected_streams.public[0],
+			normalization: true,
+			selected_columns: {
+				columns: options.excludeCreatedAt
+					? ["id", "priority", "payload"]
+					: [
+							"id",
+							options.normalizedSortNames && options.preserveSortSourceNames
+								? "Created At"
+								: "created_at",
+							"priority",
+							"payload",
+							...(options.ambiguousSortNames ? ["Created-At"] : []),
+						],
+				sync_new_columns: false,
+			},
+			...(options.preserveSortSourceNames && { use_source_column_names: true }),
+			future_extension: { kept: true },
+			...(options.sortOrder !== undefined && { sort_order: options.sortOrder }),
+		}
+		if (options.malformedSortField) {
+			const malformedFields = {
+				direction: { direction: "sideways" },
+				"null-order": { null_order: "middle" },
+			}
+			selected_streams.public[0].sort_order = [
+				{
+					column: "id",
+					direction: "asc",
+					null_order: "nulls-last",
+					...malformedFields[options.malformedSortField],
+				},
+			]
+		}
+		selected_streams.public[1].selected_columns = {
+			columns: ["id", "created_at", "priority"],
+			sync_new_columns: true,
+		}
+		selected_streams.public.push({
+			stream_name: "excluded_time",
+			normalization: true,
+			selected_columns: { columns: ["id"], sync_new_columns: false },
+			destination_database: selectedDatabase,
+		})
+		selected_streams.archive = [
+			{ stream_name: "unselected_history", normalization: true },
+		]
+		selected_streams.unavailable = [
+			{
+				stream_name: "missing_from_discovery",
+				sort_order: [],
+				future_extension: { kept: true },
+			},
+			{
+				stream_name: "disabled_missing",
+				disabled: true,
+				sort_order: [],
+				future_extension: { kept: true },
+			},
+		]
+	}
+	const sortMetadata = options.sortScenario
+		? {
+				default_sort_order: options.defaultSortOrder,
+				selected_extension: { kept: true },
+				catalogMetadata: { fixture_extension: "kept" },
+			}
+		: {}
+	const availableMetadata = options.sortScenario
+		? { available_extension: { kept: true } }
+		: {}
 	if (options.bulkAllDV) {
 		for (const entry of selected_streams.public.filter(e => !e.disabled)) {
 			entry.append_mode = false
@@ -162,7 +281,7 @@ export const installEnrollmentFixture = async (
 		destination: {
 			id: 22,
 			name: "Fixture Iceberg",
-			type: "iceberg",
+			type: options.destinationType ?? "iceberg",
 			version: "v0.8.2",
 			config: JSON.stringify({ catalog_type: "rest", warehouse: "fixture" }),
 		},
@@ -188,13 +307,16 @@ export const installEnrollmentFixture = async (
 			? {
 					available_streams_config: options.invalidCatalog
 						? "not json"
-						: JSON.stringify({ streams }),
-					selected_streams_config: JSON.stringify({ selected_streams }),
+						: JSON.stringify({ ...availableMetadata, streams }),
+					selected_streams_config: JSON.stringify({
+						...sortMetadata,
+						selected_streams,
+					}),
 				}
 			: {
 					streams_config: options.invalidCatalog
 						? "not json"
-						: JSON.stringify({ streams, selected_streams }),
+						: JSON.stringify({ ...sortMetadata, streams, selected_streams }),
 				}),
 	}
 	let currentJob = job
@@ -401,6 +523,18 @@ export const installEnrollmentFixture = async (
 							},
 						}))
 					: streams
+			const discoveredStreams =
+				options.refreshedSortSupport && requests.discoveries.length > 1
+					? refreshedStreams.map(entry => ({
+							...entry,
+							stream: { ...entry.stream, supports_iceberg_sort_order: true },
+						}))
+					: refreshedStreams
+			const savedSelection: SelectedStreams = JSON.parse(
+				(options.format === "split"
+					? currentJob.selected_streams_config
+					: currentJob.streams_config) ?? "{}",
+			)
 			const discoveredSelection = discoveryIsNew
 				? {
 						public: [
@@ -415,17 +549,30 @@ export const installEnrollmentFixture = async (
 							},
 						],
 					}
-				: selected_streams
+				: options.sortScenario
+					? savedSelection.selected_streams
+					: selected_streams
 			data =
 				options.format === "split"
 					? {
 							streams_config: null,
-							available_streams: { streams: refreshedStreams },
-							selected_streams: { selected_streams: discoveredSelection },
+							available_streams: {
+								...availableMetadata,
+								streams: discoveredStreams,
+							},
+							selected_streams: {
+								...(options.sortScenario && !discoveryIsNew
+									? savedSelection
+									: {}),
+								selected_streams: discoveredSelection,
+							},
 						}
 					: {
 							streams_config: {
-								streams: refreshedStreams,
+								...(options.sortScenario && !discoveryIsNew
+									? savedSelection
+									: {}),
+								streams: discoveredStreams,
 								selected_streams: discoveredSelection,
 							},
 							available_streams: null,

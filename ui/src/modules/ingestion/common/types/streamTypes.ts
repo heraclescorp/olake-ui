@@ -61,6 +61,7 @@ export interface StreamDefinition {
 	source_defined_primary_key?: string[]
 	default_stream_properties: DefaultStreamProperties
 	available_update_types?: UpsertType[]
+	supports_iceberg_sort_order?: boolean
 	[key: string]: unknown
 }
 
@@ -79,6 +80,21 @@ export interface DefaultStreamProperties {
 export interface SelectedColumns {
 	columns: string[]
 	sync_new_columns: boolean
+}
+
+export type SortDirection = "asc" | "desc"
+export type SortNullOrder = "nulls-first" | "nulls-last"
+
+export interface SortField {
+	column: string
+	direction: SortDirection
+	null_order: SortNullOrder
+	[key: string]: unknown
+}
+
+export interface CatalogMetadata {
+	available: UnknownObject
+	selected: UnknownObject
 }
 
 export interface SelectedStream {
@@ -100,6 +116,8 @@ export interface SelectedStream {
 	cursor_field?: string
 	destination_database?: string
 	destination_table?: string
+	sort_order?: SortField[]
+	[key: string]: unknown
 }
 
 export interface FilterConfig {
@@ -114,6 +132,9 @@ export interface SelectedStreamsByNamespace {
 export interface StreamsDataStructure {
 	selected_streams: SelectedStreamsByNamespace
 	streams: StreamData[]
+	default_sort_order?: SortField[]
+	catalogMetadata?: CatalogMetadata
+	[key: string]: unknown
 }
 
 export enum CatalogFormat {
@@ -123,25 +144,33 @@ export enum CatalogFormat {
 
 export interface AvailableStreams {
 	streams: StreamData[]
+	[key: string]: unknown
 }
 
 export interface SelectedStreams {
 	selected_streams: SelectedStreamsByNamespace
+	default_sort_order?: SortField[]
+	[key: string]: unknown
+}
+
+export interface LegacyStreamsCatalog extends SelectedStreams {
+	streams: StreamData[]
 }
 
 export interface StreamsV2Catalog {
 	available_streams: AvailableStreams
 	selected_streams: SelectedStreamsByNamespace
+	default_sort_order?: SortField[]
+	catalogMetadata?: CatalogMetadata
 }
 
 // Exactly one format is set; the other format's fields are null.
 export interface DiscoverResponse {
-	streams_config: StreamsDataStructure | null
+	streams_config: LegacyStreamsCatalog | null
 	available_streams: AvailableStreams | null
 	selected_streams: SelectedStreams | null
 }
 
-export interface StreamDifferenceResponse {
-	selected_streams: SelectedStreamsByNamespace
+export interface StreamDifferenceResponse extends SelectedStreams {
 	streams?: StreamData[]
 }
