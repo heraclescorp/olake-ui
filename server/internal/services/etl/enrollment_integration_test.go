@@ -62,7 +62,7 @@ func enrollmentServiceDatabase(t *testing.T) *database.Database {
 	for _, name := range constants.TableNameMap {
 		tables = append(tables, pq.QuoteIdentifier(name))
 	}
-	tables = append(tables, pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName()))
+	tables = append(tables, pq.QuoteIdentifier((&models.JobExecutionRecord{}).TableName()), pq.QuoteIdentifier((&models.CheckpointBackup{}).TableName()))
 	t.Cleanup(func() {
 		if _, err := admin.Exec("DROP TABLE IF EXISTS " + strings.Join(tables, ",") + " CASCADE"); err != nil {
 			t.Error(err)

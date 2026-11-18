@@ -82,7 +82,7 @@ func enrollmentTestDatabase(t *testing.T) *Database {
 			t.Error(err)
 		}
 	})
-	if err := conn.AutoMigrate(&models.Job{}, &models.JobExecutionRecord{}); err != nil {
+	if err := conn.AutoMigrate(&models.Job{}, &models.JobExecutionRecord{}, &models.CheckpointBackup{}); err != nil {
 		t.Fatal(err)
 	}
 	return &Database{conn: conn}
