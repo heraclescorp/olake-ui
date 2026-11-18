@@ -22,6 +22,7 @@ import { getConnectorImage } from "@/modules/ingestion/common/utils"
 import { useJobStore } from "../stores"
 import { Job, JobTableProps, JobType, SavedJobDraft } from "../types"
 import { getJobTypeClass, getJobTypeLabel } from "../utils"
+import ForceLSNModal from "./ForceLSNModal"
 
 const formatLastSyncTime = (text?: string) => {
 	if (!text) return <div className="pl-4">-</div>
@@ -46,6 +47,7 @@ const JobTable: React.FC<JobTableProps> = ({
 	onDelete,
 	onCancelJob,
 }) => {
+	const [forceLSNJob, setForceLSNJob] = useState<Job>()
 	const [searchText, setSearchText] = useState("")
 	const [currentPage, setCurrentPage] = useState(1)
 	const navigate = useNavigate()
@@ -99,8 +101,20 @@ const JobTable: React.FC<JobTableProps> = ({
 										key: "edit",
 										icon: <PencilSimpleIcon className="size-4" />,
 										label: "Edit Streams",
-										disabled: !j.activate,
+										// Pausing stops scheduling, not configuration edits. The API also
+										// fences retained execution owners and resync/clear workflows.
+										disabled: j.last_run_state?.toLowerCase() === "running",
 										onClick: () => onEdit(record.id.toString()),
+									},
+									{
+										key: "force-lsn",
+										label: "Force set CDC LSN",
+										danger: true,
+										disabled:
+											j.activate ||
+											j.last_run_state?.toLowerCase() === "running" ||
+											j.source.type.toLowerCase() !== "postgres",
+										onClick: () => setForceLSNJob(j),
 									},
 									{
 										key: "pause",
@@ -314,6 +328,16 @@ const JobTable: React.FC<JobTableProps> = ({
 			</div>
 
 			<div className="h-[80px]" />
+			{forceLSNJob && (
+				<ForceLSNModal
+					key={forceLSNJob.id}
+					job={forceLSNJob}
+					onClose={() => {
+						setForceLSNJob(undefined)
+						onRefresh?.()
+					}}
+				/>
+			)}
 		</>
 	)
 }

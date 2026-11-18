@@ -55,7 +55,7 @@ type BulkConfigurationTab = "config" | "partitioning" | "schema"
 type BulkConfig = {
 	syncMode: SyncMode | undefined
 	cursorField: string | undefined
-	appendMode: boolean
+	appendMode: boolean | undefined
 	dedupKeys: string[]
 	upsertType?: UpsertType
 	normalization: boolean
@@ -188,6 +188,35 @@ const BulkConfigureStreamsModal = ({
 		[selectionKey, streamsData, sourceType, destinationType],
 	)
 
+	// Resolve saved selections against each stream's own defaults, not the first
+	// connector default. Undefined represents mixed values, never an instruction.
+	const savedWriteSettings = useMemo(() => {
+		const rows = bulkSelectedStreams.map(id => {
+			const selected = streamsData?.selected_streams[id.namespace]?.find(
+				s => s.stream_name === id.streamName,
+			)
+			const defaults = streamsData?.streams.find(
+				s =>
+					s.stream.name === id.streamName &&
+					(s.stream.namespace || "") === id.namespace,
+			)?.stream.default_stream_properties
+			return {
+				append: selected?.append_mode ?? defaults?.append_mode ?? false,
+				type: selected?.update_type ?? defaults?.update_type,
+			}
+		})
+		return {
+			append:
+				rows.length && rows.every(r => r.append === rows[0].append)
+					? rows[0].append
+					: undefined,
+			type:
+				rows.length && rows.every(r => !r.append && r.type === rows[0].type)
+					? rows[0].type
+					: undefined,
+		}
+	}, [selectionKey, streamsData])
+
 	useEffect(() => {
 		if (open) {
 			setStep("select-streams")
@@ -228,9 +257,9 @@ const BulkConfigureStreamsModal = ({
 			syncMode,
 			cursorField:
 				syncMode === SyncMode.INCREMENTAL ? sortedCursors[0] : undefined,
-			appendMode: bulkStreamDefaults.append_mode ?? STREAM_DEFAULTS.append_mode,
+			appendMode: savedWriteSettings.append,
 			dedupKeys: bulkStreamDefaults.dedup_keys ?? [],
-			upsertType: bulkStreamDefaults.update_type,
+			upsertType: savedWriteSettings.type,
 			normalization:
 				bulkStreamDefaults.normalization ?? STREAM_DEFAULTS.normalization,
 			dropRemovedColumns: false,
@@ -266,6 +295,19 @@ const BulkConfigureStreamsModal = ({
 		state => state.bulkUpdateStreams,
 	)
 
+	const keepWriteSettings = () => {
+		setBulkConfig(prev => ({
+			...prev,
+			appendMode: savedWriteSettings.append,
+			upsertType: savedWriteSettings.type,
+		}))
+		setDirtyFields(prev => ({
+			...prev,
+			[BulkDirtyFieldKey.AppendMode]: false,
+			[BulkDirtyFieldKey.UpsertType]: false,
+		}))
+	}
+
 	const handleApplyChanges = () => {
 		bulkUpdateStreams(bulkSelectedStreams, {
 			...(dirtyFields[BulkDirtyFieldKey.SyncMode] && {
@@ -276,11 +318,11 @@ const BulkConfigureStreamsModal = ({
 				appendMode: bulkConfig.appendMode,
 			}),
 			...(dirtyFields[BulkDirtyFieldKey.DedupKeys] &&
-				!bulkConfig.appendMode && {
+				bulkConfig.appendMode !== true && {
 					dedupKeys: bulkConfig.dedupKeys,
 				}),
 			...(dirtyFields[BulkDirtyFieldKey.UpsertType] &&
-				!bulkConfig.appendMode && {
+				bulkConfig.appendMode !== true && {
 					upsertType: bulkConfig.upsertType,
 				}),
 			...(dirtyFields[BulkDirtyFieldKey.Normalization] && {
@@ -308,7 +350,7 @@ const BulkConfigureStreamsModal = ({
 	const missingUpsertDedupKeys =
 		isKafka &&
 		!kafkaUpsertBlocked &&
-		!bulkConfig.appendMode &&
+		bulkConfig.appendMode !== true &&
 		(dirtyFields[BulkDirtyFieldKey.AppendMode] ||
 			dirtyFields[BulkDirtyFieldKey.DedupKeys]) &&
 		bulkConfig.dedupKeys.length === 0
@@ -534,7 +576,7 @@ const BulkConfigureStreamsModal = ({
 												dirtyFields[BulkDirtyFieldKey.AppendMode] ||
 												dirtyFields[BulkDirtyFieldKey.DedupKeys] ||
 												(dirtyFields[BulkDirtyFieldKey.UpsertType] &&
-													!bulkConfig.appendMode)) && (
+													bulkConfig.appendMode !== true)) && (
 												<div className={CARD_STYLE}>
 													<span className="mb-2 block text-sm font-medium text-olake-text">
 														Ingestion Settings
@@ -562,7 +604,7 @@ const BulkConfigureStreamsModal = ({
 													{isKafka &&
 														!kafkaUpsertBlocked &&
 														dirtyFields[BulkDirtyFieldKey.DedupKeys] &&
-														!bulkConfig.appendMode && (
+														bulkConfig.appendMode !== true && (
 															<DedupKeysSelectionBulk
 																options={getDedupKeyOptions(bulkStream)}
 																value={bulkConfig.dedupKeys}
@@ -801,6 +843,15 @@ const BulkConfigureStreamsModal = ({
 														</button>
 														{!isSyncIngestionCollapsed && (
 															<>
+																<Button onClick={keepWriteSettings}>
+																	Keep existing write settings
+																</Button>
+																<p>
+																	Only changed fields apply. Selecting a delete
+																	format also sets Upsert for the listed
+																	streams. Apply Changes updates this editor;
+																	Finish saves the job.
+																</p>
 																<SyncModeSectionBulk
 																	isDirty={
 																		dirtyFields[BulkDirtyFieldKey.SyncMode]
@@ -829,12 +880,16 @@ const BulkConfigureStreamsModal = ({
 																	}
 																	onBulkIngestionModeChange={value => {
 																		setBulkConfigField("appendMode", value)
-																		markDirty(BulkDirtyFieldKey.AppendMode)
+																		setDirtyFields(prev => ({
+																			...prev,
+																			[BulkDirtyFieldKey.AppendMode]:
+																				value !== savedWriteSettings.append,
+																		}))
 																	}}
 																/>
 																{isKafka &&
 																	!kafkaUpsertBlocked &&
-																	!bulkConfig.appendMode && (
+																	bulkConfig.appendMode !== true && (
 																		<DedupKeysSelectionBulk
 																			isDirty={
 																				dirtyFields[BulkDirtyFieldKey.DedupKeys]
@@ -858,7 +913,18 @@ const BulkConfigureStreamsModal = ({
 																	bulkUpsertType={bulkConfig.upsertType}
 																	onBulkUpsertTypeChange={value => {
 																		setBulkConfigField("upsertType", value)
-																		markDirty(BulkDirtyFieldKey.UpsertType)
+																		setDirtyFields(prev => ({
+																			...prev,
+																			[BulkDirtyFieldKey.UpsertType]:
+																				value !== undefined &&
+																				value !== savedWriteSettings.type,
+																			...(value !== undefined && {
+																				[BulkDirtyFieldKey.AppendMode]:
+																					savedWriteSettings.append !== false,
+																			}),
+																		}))
+																		if (value !== undefined)
+																			setBulkConfigField("appendMode", false)
 																	}}
 																/>
 															</>

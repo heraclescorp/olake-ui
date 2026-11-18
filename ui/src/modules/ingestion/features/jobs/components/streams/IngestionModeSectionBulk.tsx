@@ -21,18 +21,23 @@ const IngestionModeSectionBulk = ({
 	onBulkIngestionModeChange,
 }: IngestionModeSectionBulkProps) => {
 	return (
-		<IngestionModeSectionView
-			sourceType={sourceType}
-			sourceVersion={sourceVersion}
-			destinationType={destinationType}
-			isSelected={true}
-			isDirty={isDirty}
-			appendMode={bulkAppendMode ?? true}
-			dedupKeyCount={dedupKeyCount}
-			onChange={ingestionMode =>
-				onBulkIngestionModeChange?.(ingestionMode === IngestionMode.APPEND)
-			}
-		/>
+		<>
+			{bulkAppendMode === undefined && (
+				<p>Mixed / Keep existing ingestion modes</p>
+			)}
+			<IngestionModeSectionView
+				sourceType={sourceType}
+				sourceVersion={sourceVersion}
+				destinationType={destinationType}
+				isSelected={true}
+				isDirty={isDirty}
+				appendMode={bulkAppendMode}
+				dedupKeyCount={dedupKeyCount}
+				onChange={ingestionMode =>
+					onBulkIngestionModeChange?.(ingestionMode === IngestionMode.APPEND)
+				}
+			/>
+		</>
 	)
 }
 

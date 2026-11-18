@@ -29,6 +29,7 @@ import {
 	STREAM_DEFAULTS,
 } from "../constants"
 import { useJobDetailsFresh, useStreamDifference, useUpdateJob } from "../hooks"
+import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
 import {
 	useJobStore,
 	useStreamSelectionStore,
@@ -45,7 +46,6 @@ import {
 	willBuildIndex,
 	withIndexRequired,
 } from "../utils"
-import { useEnrollmentConfiguration } from "../hooks/useEnrollmentConfiguration"
 import {
 	buildEnrollmentPolicy,
 	getEnrollmentCatalog,
@@ -60,6 +60,7 @@ const JobEdit: React.FC = () => {
 		setShowStreamDifferenceModal,
 	} = useJobStore()
 	const isDiscovering = useStreamSelectionStore(state => state.isDiscovering)
+	const discoverError = useStreamSelectionStore(state => state.discoverError)
 	const streamsData = useStreamSelectionStore(state => state.streamsData)
 	const {
 		data: job,
@@ -574,7 +575,12 @@ const JobEdit: React.FC = () => {
 						// Only this button triggers work on the streams step; on the
 						// config step "Next" just advances, so it must not spin.
 						loading={currentStep === JOB_CREATION_STEPS.STREAMS && isBusy}
-						disabled={isBusy || isDiscovering || isJobLoading}
+						disabled={
+							isBusy ||
+							isDiscovering ||
+							isJobLoading ||
+							(currentStep === JOB_CREATION_STEPS.STREAMS && !!discoverError)
+						}
 					>
 						{currentStep === JOB_CREATION_STEPS.STREAMS ? "Finish" : "Next"}
 						{currentStep !== JOB_CREATION_STEPS.STREAMS && (
