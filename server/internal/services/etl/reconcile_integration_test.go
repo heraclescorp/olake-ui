@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
@@ -181,22 +181,59 @@ func TestReconcileCanceledExecutionIsAuthorizedStableAndNeverClearsOwner(t *test
 	}
 }
 
-func TestUnknownOrdinaryRecoveryRemainsActionableWithoutFalseSuccess(t *testing.T) {
+func TestUnknownOrdinaryRecoveryRetainsAuthorityCheckpointAndPausedSchedule(t *testing.T) {
 	service, job, _, remote, _ := recoveryServiceFixture(t, "closing")
 	remote.command = etltemporal.Sync
-	if _, err := service.ReconcileJobExecution(context.Background(), job.ProjectID, job.ID, true); err != nil {
+	ctx := context.Background()
+	beforeJob, err := service.db.GetJobByID(job.ID, false)
+	if err != nil {
 		t.Fatal(err)
+	}
+	beforeRecord, err := service.db.GetJobExecutionRecord(ctx, job.ID, remote.workflowID)
+	if err != nil || beforeRecord == nil {
+		t.Fatalf("retained execution record unavailable: %v", err)
+	}
+	status, err := service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, false)
+	if err != nil || status.Status != "awaiting_reconciliation" || !status.CanReconcile || len(remote.requests) != 0 {
+		t.Fatalf("ordinary observation mutated or hid the retained operation: %+v %v", status, err)
+	}
+	accepted, err := service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, true)
+	if err != nil || accepted.Status != "reconciling" || accepted.CanReconcile || accepted.RecoveryRunID == "" {
+		t.Fatalf("ordinary recovery was reported completed or not accepted: %+v %v", accepted, err)
+	}
+	status, err = service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, false)
+	if err != nil || status.Status != "reconciling" || status.CanReconcile || len(remote.requests) != 1 {
+		t.Fatalf("active ordinary recovery was presented as resettable: %+v %v", status, err)
 	}
 	remote.latestStatus = enumspb.WORKFLOW_EXECUTION_STATUS_FAILED
-	status, err := service.ReconcileJobExecution(context.Background(), job.ProjectID, job.ID, false)
-	if err != nil || status.Status != "blocked" || !status.CanReconcile || !strings.Contains(status.Message, "independently establish") {
-		t.Fatalf("unknown outcome hidden or force-unlocked: %+v %v", status, err)
+	status, err = service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, false)
+	if err != nil || status.Status != "blocked" || !status.CanReconcile || status.LastError == "" || len(remote.requests) != 1 {
+		t.Fatalf("failed ordinary recovery was hidden or reported successful: %+v %v", status, err)
 	}
-	if _, err := service.ReconcileJobExecution(context.Background(), job.ProjectID, job.ID, true); err != nil {
+	if _, err := service.ReconcileJobExecution(ctx, job.ProjectID, job.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if remote.requests[0].RequestId == remote.requests[1].RequestId {
-		t.Fatal("a completed recovery attempt prevented later evidence recheck")
+	if len(remote.requests) != 2 || remote.requests[0].RequestId == remote.requests[1].RequestId {
+		t.Fatal("a completed recovery attempt prevented a distinct evidence recheck")
+	}
+	for _, request := range remote.requests {
+		if request.WorkflowExecution.WorkflowId != remote.workflowID || request.WorkflowExecution.RunId != remote.ownerRun || request.WorkflowTaskFinishEventId != 4 || request.ResetReapplyType != enumspb.RESET_REAPPLY_TYPE_NONE {
+			t.Fatalf("ordinary recovery did not reset the exact original operation: %+v", request)
+		}
+	}
+	afterJob, err := service.db.GetJobByID(job.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRecord, err := service.db.GetJobExecutionRecord(ctx, job.ID, remote.workflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeJob, afterJob) || !reflect.DeepEqual(beforeRecord, afterRecord) {
+		t.Fatal("ordinary reconciliation changed the retained owner, checkpoint, catalog or worker authority")
+	}
+	if !remote.handle.schedule.State.Paused || remote.handle.unpauses != 0 {
+		t.Fatal("ordinary reconciliation resumed the normal schedule")
 	}
 }
 

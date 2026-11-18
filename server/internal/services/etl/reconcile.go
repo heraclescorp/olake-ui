@@ -142,10 +142,10 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 		return recoveryNotReady(result, reset)
 	}
 	result.Status, result.CanReconcile = "awaiting_reconciliation", true
-	result.Message = "Reconcile this same operation to check its immutable completion evidence. Known unpublished resyncs and settled ordinary runs can retire; uncertain resyncs use read-only publication recovery. Unknown ordinary receipts require independently established remote-outcome evidence and cannot be force-unlocked or reclassified from logs. A pending handoff remains bound."
+	result.Message = "Reconcile this same operation using its immutable evidence. Settled runs may retire; uncertain resyncs use read-only publication recovery. Unknown ordinary sync recovery is restricted to controlled PostgreSQL to native REST/S3 Tables with the original frozen CDC/strictCDC catalog and completed baseline. After exact original runtime retirement, ordinary recovery may write table-fencing snapshots and use bounded replay to prove a common checkpoint; it is not a fresh unbounded sync. Unsupported or unproven outcomes, including unknown clear-destination runs, remain locked. The schedule is not resumed."
 	if previousRecoveryFailed || record.Outcome == "recovery" {
 		result.Status = "blocked"
-		result.Message = "The last recovery run ended without retiring this owner. The remote outcome is still unconfirmed. Inspect recovery worker logs and restore access to the immutable receipt or independently establish the remote outcome with the connector/catalog operator. After that prerequisite is resolved, Reconcile rechecks the same operation; it never force-clears ownership or treats logs as proof."
+		result.Message = "The last recovery run ended without retiring this owner. Reconcile retries the same operation and rechecks immutable artifacts, saved checkpoint, exact runtime retirement and authoritative remote evidence. Eligible ordinary PostgreSQL to native REST/S3 Tables CDC recovery may write table-fencing snapshots and use bounded replay; resync publication recovery remains read-only. Use the recovery error to identify any missing prerequisite; logs are diagnostic only, not proof. Unsupported or unproven outcomes remain locked and the schedule is not resumed."
 	}
 	if !reset {
 		return result, nil
@@ -165,7 +165,7 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 		return result, fmt.Errorf("reconciliation reset returned no controlling run identity; refresh status")
 	}
 	result.Status, result.CanReconcile, result.RecoveryRunID = "reconciling", false, response.RunId
-	result.Message = "Reconciliation was accepted, not completed. The worker must still prove the remote outcome and exact resource retirement; ownership and any pending handoff remain protected until then."
+	result.Message = "Reconciliation was accepted, not completed. The worker must still validate recovery eligibility and prove the remote outcome, final checkpoint and exact resource retirement. Ownership and any pending handoff remain protected until then; the schedule is not resumed."
 	return result, nil
 }
 
