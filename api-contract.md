@@ -87,6 +87,15 @@ skipped table names and reasons, and requires review/apply. Append-mode and
 unselected tables remain unchanged. Discovery does not inspect current Iceberg
 delete files: a selected table can still fail at runtime until separately cleaned.
 
+Automatic enrollment has a separate optional
+`auto_table_enrollment.defaults.merge_strategy` (`copy-on-write` or
+`merge-on-read`); omission retains the existing MOR behavior. COW requires
+normalized upsert and source TOAST. Newly discovered tables without a primary
+key or other prerequisites are skipped with a reason in job logs. Old table
+settings, exclusions, and checkpoints are unchanged. Selecting COW preserves
+the inactive MOR delete format; mixed jobs retain any index still required by
+existing MOR tables. The connector, worker, and UI must all support this field.
+
 The writer uses existing end-of-run checkpoint/commit/recovery semantics and
 canonical `_olake_id` identity. There are no COW batching options, periodic
 checkpoints or migration controls. Existing live delete files fail before

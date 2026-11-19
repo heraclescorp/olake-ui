@@ -413,6 +413,7 @@ const JobEdit: React.FC = () => {
 			if (enrollment.supported || advancedSettings?.auto_table_enrollment) {
 				const result = buildEnrollmentPolicy({
 					...enrollment,
+					sourceConfig: sourceSnapshot.config,
 					catalogRevision: originalCatalogRevision.current,
 					requireRevision:
 						enrollment.draft.enabled ||

@@ -44,6 +44,8 @@ interface EnrollmentFixtureOptions {
 	preserveSortSourceNames?: boolean
 	ambiguousSortNames?: boolean
 	refreshedSortSupport?: boolean
+	cowCapability?: boolean
+	toastValueSource?: "source" | "destination"
 }
 
 export interface EnrollmentFixtureRequests {
@@ -128,6 +130,7 @@ export const installEnrollmentFixture = async (
 			supported_sync_modes: ["cdc", "full_refresh"],
 			supports_iceberg_sort_order:
 				!!options.sortScenario && !options.unsupportedSortConnector,
+			supports_iceberg_copy_on_write: options.cowCapability === true,
 			sync_mode: "cdc",
 			destination_database:
 				name === "sparse_saved"
@@ -276,7 +279,16 @@ export const installEnrollmentFixture = async (
 			name: "Fixture PostgreSQL",
 			type: options.sourceType ?? "postgres",
 			version: "v0.8.2",
-			config: JSON.stringify({ host: "fixture.invalid", database: "source" }),
+			config: JSON.stringify({
+				host: "fixture.invalid",
+				database: "source",
+				...((options.cowCapability || options.toastValueSource) && {
+					update_method: {
+						replication_slot: "fixture",
+						toast_value_source: options.toastValueSource ?? "source",
+					},
+				}),
+			}),
 		},
 		destination: {
 			id: 22,

@@ -157,6 +157,103 @@ test.describe("Automatic table enrollment (intercepted APIs only)", () => {
 		"legacy",
 		"split",
 	] satisfies EnrollmentCatalogFormat[]) {
+		test(`${format}: COW saves and reopens without changing existing tables or MOR preference`, async ({
+			page,
+		}) => {
+			const requests = await installEnrollmentFixture(page, {
+				format,
+				policy: savedEnrollmentPolicy,
+				cowCapability: true,
+				readerSupports: [UpsertType.DELETION_VECTOR],
+			})
+			await page.goto("/jobs/42/settings")
+			expect(requests.writes).toEqual([])
+			await chooseDefault(
+				page,
+				"Merge strategy for new tables",
+				"Copy-on-write (index-free)",
+			)
+			await expect(
+				enrollmentPanel(page).getByText(/New tables without a primary key/),
+			).toBeVisible()
+			await saveSettings(page)
+			await expect(page).toHaveURL(/\/jobs$/)
+			expect(
+				requests.updates[0].advanced_settings?.auto_table_enrollment?.defaults,
+			).toEqual({
+				...savedEnrollmentPolicy.defaults,
+				merge_strategy: "copy-on-write",
+			})
+			expectSavedConfigurationPreserved(requests, requests.updates[0])
+			await page.goto("/jobs/42/settings")
+			await expect(
+				enrollmentPanel(page).getByText("Copy-on-write (index-free)", {
+					exact: true,
+				}),
+			).toBeVisible()
+			await expect(
+				enrollmentPanel(page).getByText(/Inactive while using copy-on-write/),
+			).toBeVisible()
+		})
+	}
+
+	test("saved COW without capability is preserved and offers an actionable warning", async ({
+		page,
+	}) => {
+		const policy = {
+			...savedEnrollmentPolicy,
+			defaults: {
+				...savedEnrollmentPolicy.defaults,
+				merge_strategy: "copy-on-write" as const,
+			},
+		}
+		const requests = await installEnrollmentFixture(page, { policy })
+		await page.goto("/jobs/42/settings")
+		await expect(
+			enrollmentPanel(page).getByText(
+				/Copy-on-write support is not advertised/,
+			),
+		).toBeVisible()
+		expect(requests.writes).toEqual([])
+		await saveSettings(page)
+		await expect(
+			page.getByText(
+				/available catalog does not advertise copy-on-write support/,
+			),
+		).toBeVisible()
+		expect(requests.updates).toHaveLength(0)
+		await chooseDefault(page, "Merge strategy for new tables", "Merge-on-read")
+		await saveSettings(page)
+		await expect(page).toHaveURL(/\/jobs$/)
+		expect(
+			requests.updates[0].advanced_settings?.auto_table_enrollment?.defaults
+				?.merge_strategy,
+		).toBe("merge-on-read")
+	})
+
+	test("COW rejects destination TOAST without saving", async ({ page }) => {
+		const requests = await installEnrollmentFixture(page, {
+			policy: savedEnrollmentPolicy,
+			cowCapability: true,
+			toastValueSource: "destination",
+		})
+		await page.goto("/jobs/42/settings")
+		await chooseDefault(
+			page,
+			"Merge strategy for new tables",
+			"Copy-on-write (index-free)",
+		)
+		await saveSettings(page)
+		await expect(
+			page.getByText(/requires source TOAST hydration/),
+		).toBeVisible()
+		expect(requests.updates).toHaveLength(0)
+	})
+
+	for (const format of [
+		"legacy",
+		"split",
+	] satisfies EnrollmentCatalogFormat[]) {
 		test(`${format}: absent policy displays default-on and infers routing only on explicit save`, async ({
 			page,
 		}) => {

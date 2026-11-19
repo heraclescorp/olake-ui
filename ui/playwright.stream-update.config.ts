@@ -9,6 +9,7 @@ export default defineConfig({
 		"bulk-write-update.spec.ts",
 		"force-lsn.spec.ts",
 		"iceberg-sort-order.spec.ts",
+		"auto-table-enrollment.spec.ts",
 	],
 	timeout: 45_000,
 	expect: { timeout: 15_000 },

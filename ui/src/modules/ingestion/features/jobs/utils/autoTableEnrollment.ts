@@ -23,11 +23,13 @@ export interface AutoTableEnrollmentDraft {
 	enabled: boolean
 	schemas: AutoTableEnrollmentSchema[]
 	defaults: AutoTableEnrollmentDefaults
+	[key: string]: unknown
 }
 
 export interface EnrollmentCatalog {
 	namespaces: string[]
 	schemas: AutoTableEnrollmentSchema[]
+	supportsCopyOnWrite?: boolean
 	error?: string
 }
 
@@ -91,6 +93,7 @@ export const enrollmentDraftFromPolicy = (
 	supported = false,
 	availableUpdateTypes?: UpsertType[],
 ): AutoTableEnrollmentDraft => ({
+	...policy,
 	enabled: policy == null ? supported : policy.enabled === true,
 	schemas: policy?.schemas?.map(schema => ({ ...schema })) ?? [],
 	defaults: {
@@ -164,7 +167,13 @@ export const enrollmentCatalogFromStreams = (
 			schemas.push({ namespace, destination_database })
 		}
 	}
-	return { namespaces, schemas }
+	return {
+		namespaces,
+		schemas,
+		supportsCopyOnWrite: catalog.streams.some(
+			entry => entry.stream.supports_iceberg_copy_on_write === true,
+		),
+	}
 }
 
 export const getEnrollmentCatalog = (job: Job): EnrollmentCatalog => {
@@ -197,6 +206,7 @@ export const buildEnrollmentPolicy = ({
 	catalog,
 	capabilities,
 	catalogRevision,
+	sourceConfig,
 	requireRevision = false,
 }: {
 	draft: AutoTableEnrollmentDraft
@@ -204,6 +214,7 @@ export const buildEnrollmentPolicy = ({
 	catalog: EnrollmentCatalog
 	capabilities: EnrollmentCapabilities
 	catalogRevision?: string
+	sourceConfig?: unknown
 	requireRevision?: boolean
 }): EnrollmentPolicyResult => {
 	if (requireRevision && !catalogRevision) {
@@ -217,6 +228,7 @@ export const buildEnrollmentPolicy = ({
 		return {
 			valid: true,
 			policy: {
+				...draft,
 				enabled: false,
 				schemas: draft.schemas.map(schema => ({ ...schema })),
 				defaults: { ...draft.defaults },
@@ -240,24 +252,84 @@ export const buildEnrollmentPolicy = ({
 				"No source schemas are available. Refresh the table list before saving automatic enrollment.",
 		}
 	}
-	if (capabilities.error) {
-		return { valid: false, error: capabilities.error }
-	}
+	const strategy = draft.defaults.merge_strategy
 	if (
-		!draft.defaults.append_mode &&
-		!capabilities.availableUpdateTypes.includes(draft.defaults.update_type)
+		strategy !== undefined &&
+		strategy !== "merge-on-read" &&
+		strategy !== "copy-on-write"
 	) {
+		return { valid: false, error: "Choose merge-on-read or copy-on-write." }
+	}
+	if (!Object.values(UpsertType).includes(draft.defaults.update_type)) {
 		return {
 			valid: false,
-			error:
-				"Choose a delete format supported by the current source version and target query engines.",
+			error: "Choose a valid delete format: eq, pos or dv.",
+		}
+	}
+	if (strategy === "copy-on-write") {
+		if (!draft.defaults.normalization || draft.defaults.append_mode) {
+			return {
+				valid: false,
+				error: "Copy-on-write requires normalization and upsert mode.",
+			}
+		}
+		if (!catalog.supportsCopyOnWrite) {
+			return {
+				valid: false,
+				error:
+					"The available catalog does not advertise copy-on-write support. Refresh discovery with a supported connector or select merge-on-read.",
+			}
+		}
+		let config: unknown = sourceConfig
+		if (typeof config === "string") {
+			try {
+				config = JSON.parse(config)
+			} catch {
+				config = null
+			}
+		}
+		const source =
+			config && typeof config === "object" && !Array.isArray(config)
+				? (config as Record<string, unknown>)
+				: null
+		const update = source?.update_method
+		if (!update || typeof update !== "object" || Array.isArray(update)) {
+			return {
+				valid: false,
+				error:
+					"Copy-on-write requires PostgreSQL CDC. Configure the source update method.",
+			}
+		}
+		const toast = (update as Record<string, unknown>).toast_value_source
+		if (toast !== undefined && toast !== "" && toast !== "source") {
+			return {
+				valid: false,
+				error:
+					"Copy-on-write requires source TOAST hydration. Change the source update method to use source TOAST.",
+			}
+		}
+	} else {
+		if (capabilities.error) return { valid: false, error: capabilities.error }
+		if (
+			!draft.defaults.append_mode &&
+			!capabilities.availableUpdateTypes.includes(draft.defaults.update_type)
+		) {
+			return {
+				valid: false,
+				error:
+					"Choose a delete format supported by the current source version and target query engines.",
+			}
 		}
 	}
 	return {
 		valid: true,
 		policy: {
+			...draft,
 			enabled: true,
-			schemas: catalog.schemas.map(schema => ({ ...schema })),
+			schemas: catalog.schemas.map(schema => ({
+				...draft.schemas.find(saved => saved.namespace === schema.namespace),
+				...schema,
+			})),
 			defaults: { ...draft.defaults },
 		},
 	}

@@ -3,6 +3,8 @@ package etl
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
@@ -213,5 +215,88 @@ func TestJobDetailExposesSavedRevisionWithoutResettingState(t *testing.T) {
 		if err != nil || string(before) != string(after) {
 			t.Fatalf("detail read reset saved state or references: %s, %v", after, err)
 		}
+	}
+}
+
+func TestEnrollmentCopyOnWritePolicy(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		job := enrollmentJob(t, split)
+		available := job.AvailableStreamsConfig
+		if !split {
+			available = job.StreamsConfig
+		}
+		marked := strings.Replace(*available, `"namespace":"public"`, `"supports_iceberg_copy_on_write":true,"namespace":"public"`, 1)
+		*available = marked // No existing stream needs a primary key.
+		for _, tc := range []struct {
+			name, strategy        string
+			normalization, append bool
+			update                string
+			valid                 bool
+		}{
+			{"COW with inactive MOR preference", `"copy-on-write"`, true, false, "pos", true},
+			{"COW no normalization", `"copy-on-write"`, false, false, "pos", false},
+			{"COW append", `"copy-on-write"`, true, true, "pos", false},
+			{"COW invalid preference", `"copy-on-write"`, true, false, "other", false},
+			{"MOR reader mismatch", `"merge-on-read"`, true, false, "pos", false},
+			{"null strategy", `null`, true, false, "pos", false},
+			{"unknown strategy", `"other"`, true, false, "pos", false},
+			{"nonstring strategy", `42`, true, false, "pos", false},
+		} {
+			t.Run(map[bool]string{false: "legacy/", true: "split/"}[split]+tc.name, func(t *testing.T) {
+				s := enrollmentSettings(t, validEnrollmentSettings)
+				s.TargetQueryEngines = []string{"databricks"}
+				d := s.AutoTableEnrollment.Defaults
+				d.Normalization, d.AppendMode = &tc.normalization, &tc.append
+				d.UpdateType, d.MergeStrategy = tc.update, json.RawMessage(tc.strategy)
+				err := validateEnrollmentPolicy(s, "postgres", "iceberg", job.StreamsCatalog())
+				if (err == nil) != tc.valid {
+					t.Fatalf("valid=%v: %v", tc.valid, err)
+				}
+			})
+		}
+		unknownEngine := enrollmentSettings(t, validEnrollmentSettings)
+		normalized, appendMode := true, false
+		unknownEngine.AutoTableEnrollment.Defaults.Normalization = &normalized
+		unknownEngine.AutoTableEnrollment.Defaults.AppendMode = &appendMode
+		unknownEngine.AutoTableEnrollment.Defaults.MergeStrategy = json.RawMessage(`"copy-on-write"`)
+		unknownEngine.TargetQueryEngines = []string{"not-an-engine"}
+		if err := validateEnrollmentPolicy(unknownEngine, "postgres", "iceberg", job.StreamsCatalog()); !errors.Is(err, constants.ErrInvalidEnrollmentPolicy) {
+			t.Fatalf("unknown query engine accepted under COW: %v", err)
+		}
+		unmarked := strings.Replace(marked, `"supports_iceberg_copy_on_write":true,`, "", 1)
+		*available = unmarked
+		s := enrollmentSettings(t, validEnrollmentSettings)
+		d := s.AutoTableEnrollment.Defaults
+		trueValue := true
+		d.Normalization, d.MergeStrategy = &trueValue, json.RawMessage(`"copy-on-write"`)
+		if err := validateEnrollmentPolicy(s, "postgres", "iceberg", job.StreamsCatalog()); !errors.Is(err, constants.ErrInvalidEnrollmentPolicy) {
+			t.Fatalf("missing capability accepted: %v", err)
+		}
+	}
+}
+
+func TestEnrollmentExtensionsRoundTrip(t *testing.T) {
+	raw := `{"extra":{"large":9007199254740993},"auto_table_enrollment":{"enabled":true,"future":true,"schemas":[{"namespace":"public","destination_database":"warehouse","future_schema":1}],"defaults":{"normalization":true,"append_mode":false,"update_type":"pos","sync_new_columns":false,"merge_strategy":"copy-on-write","future_default":{"keep":true}}}}`
+	s := enrollmentSettings(t, raw)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &after); err != nil {
+		t.Fatal(err)
+	}
+	var beforeValue, afterValue any
+	if err := json.Unmarshal(before["auto_table_enrollment"], &beforeValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(after["auto_table_enrollment"], &afterValue); err != nil {
+		t.Fatal(err)
+	}
+	if string(before["extra"]) != string(after["extra"]) || !reflect.DeepEqual(beforeValue, afterValue) {
+		t.Fatalf("extensions lost: %s", data)
 	}
 }

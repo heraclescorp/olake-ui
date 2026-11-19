@@ -225,6 +225,7 @@ const JobCreation: React.FC = () => {
 		if (!streamsData) return
 		const result = buildEnrollmentPolicy({
 			...enrollment,
+			sourceConfig: sourceConnectorPayload.config,
 		})
 		if (
 			(enrollment.supported || advancedSettings?.auto_table_enrollment) &&

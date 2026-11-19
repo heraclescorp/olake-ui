@@ -1,5 +1,7 @@
 package dto
 
+import "encoding/json"
+
 // Common fields for source/destination config
 // source and destination are driver in olake cli
 type DriverConfig struct {
@@ -106,6 +108,7 @@ type AdvancedSettings struct {
 	// AutoTableEnrollment opts PostgreSQL -> Iceberg jobs into enrollment of new
 	// tables in explicitly approved existing schemas; off/missing keeps old behavior.
 	AutoTableEnrollment *AutoTableEnrollmentPolicy `json:"auto_table_enrollment,omitempty"`
+	Extra               map[string]json.RawMessage `json:"-"`
 }
 
 // AutoTableEnrollmentPolicy approves only existing source namespaces. Pointer
@@ -114,24 +117,28 @@ type AutoTableEnrollmentPolicy struct {
 	Enabled  bool                         `json:"enabled"`
 	Schemas  []AutoTableEnrollmentSchema  `json:"schemas,omitempty"`
 	Defaults *AutoTableEnrollmentDefaults `json:"defaults,omitempty"`
+	Extra    map[string]json.RawMessage   `json:"-"`
 }
 
 type AutoTableEnrollmentSchema struct {
 	// Namespace must be unique, nonblank and present in the saved available catalog.
 	Namespace string `json:"namespace"`
 	// DestinationDatabase is an explicit mapping, never inferred from another table.
-	DestinationDatabase string `json:"destination_database"`
+	DestinationDatabase string                     `json:"destination_database"`
+	Extra               map[string]json.RawMessage `json:"-"`
 }
 
 // AutoTableEnrollmentDefaults requires all fields when enabled, including explicit
-// false booleans, except DropRemovedColumns (absent means off). Upsert delete
-// types must support all target_query_engines.
+// false booleans, except DropRemovedColumns (absent means off). MergeStrategy
+// is optional; an omitted strategy means merge-on-read.
 type AutoTableEnrollmentDefaults struct {
-	Normalization      *bool  `json:"normalization"`
-	AppendMode         *bool  `json:"append_mode"`
-	UpdateType         string `json:"update_type" enums:"eq,pos,dv"`
-	SyncNewColumns     *bool  `json:"sync_new_columns"`
-	DropRemovedColumns *bool  `json:"drop_removed_columns,omitempty"`
+	Normalization      *bool                      `json:"normalization"`
+	AppendMode         *bool                      `json:"append_mode"`
+	UpdateType         string                     `json:"update_type" enums:"eq,pos,dv"`
+	MergeStrategy      json.RawMessage            `json:"merge_strategy,omitempty" enums:"merge-on-read,copy-on-write"`
+	SyncNewColumns     *bool                      `json:"sync_new_columns"`
+	DropRemovedColumns *bool                      `json:"drop_removed_columns,omitempty"`
+	Extra              map[string]json.RawMessage `json:"-"`
 }
 
 type JobMetadata struct {
