@@ -22,7 +22,6 @@ import {
 	UpsertType,
 	SortField,
 	MergeStrategy,
-	COWOptions,
 } from "@/modules/ingestion/common/types"
 import { isKafkaSource } from "@/modules/ingestion/common/utils"
 import { BulkConfigureStreamsModalProps } from "@/modules/ingestion/features/jobs/types"
@@ -55,7 +54,6 @@ import MergeStrategyEditor from "../streams/MergeStrategyEditor"
 import {
 	copyOnWriteEnabled,
 	getCOWEligibilityError,
-	validateCatalogCOW,
 } from "../../utils/copyOnWrite"
 
 type BulkConfigureStep =
@@ -72,7 +70,6 @@ type BulkConfig = {
 	dedupKeys: string[]
 	upsertType?: UpsertType
 	mergeStrategy?: MergeStrategy
-	cowOptions: COWOptions
 	normalization: boolean
 	dropRemovedColumns: boolean
 	filter: string
@@ -94,7 +91,6 @@ enum BulkDirtyFieldKey {
 	UseSourceColumnNames = "useSourceColumnNames",
 	SortOrder = "sortOrder",
 	MergeStrategy = "mergeStrategy",
-	COWOptions = "cowOptions",
 }
 
 type BulkDirtyFields = Record<BulkDirtyFieldKey, boolean>
@@ -111,7 +107,6 @@ const INITIAL_DIRTY_FIELDS: BulkDirtyFields = {
 	[BulkDirtyFieldKey.UseSourceColumnNames]: false,
 	[BulkDirtyFieldKey.SortOrder]: false,
 	[BulkDirtyFieldKey.MergeStrategy]: false,
-	[BulkDirtyFieldKey.COWOptions]: false,
 }
 
 const INITIAL_BULK_CONFIG: BulkConfig = {
@@ -121,7 +116,6 @@ const INITIAL_BULK_CONFIG: BulkConfig = {
 	dedupKeys: [],
 	upsertType: undefined,
 	mergeStrategy: undefined,
-	cowOptions: {},
 	normalization: false,
 	dropRemovedColumns: false,
 	filter: "",
@@ -236,42 +230,24 @@ const BulkConfigureStreamsModal = ({
 					...(dirtyFields[BulkDirtyFieldKey.MergeStrategy] && {
 						merge_strategy: bulkConfig.mergeStrategy,
 					}),
-					...(dirtyFields[BulkDirtyFieldKey.COWOptions] && {
-						cow_options: { ...selected.cow_options, ...bulkConfig.cowOptions },
-					}),
 				},
 			},
 		]
 	})
-	const cowDisabledReason = cowRows
-		.map(row =>
-			getCOWEligibilityError({
-				...row,
-				sourceType,
-				destinationType,
-				sourceConfig: source?.config,
-				destinationConfig: destination?.config,
-			}),
-		)
-		.find(Boolean)
-	const bulkCOWError = validateCatalogCOW(
-		{
-			streams: cowRows.map(row => row.stream),
-			selected_streams: Object.fromEntries(
-				[...new Set(cowRows.map(row => row.stream.stream.namespace ?? ""))].map(
-					namespace => [
-						namespace,
-						cowRows
-							.filter(row => (row.stream.stream.namespace ?? "") === namespace)
-							.map(row => row.selected),
-					],
-				),
-			),
-		},
-		sourceType,
-		destinationType,
-		{ sourceConfig: source?.config, destinationConfig: destination?.config },
-	)
+	const cowEligibility = cowRows.map(row => ({
+		...row,
+		error: getCOWEligibilityError({
+			...row,
+			sourceType,
+			destinationType,
+			sourceConfig: source?.config,
+			destinationConfig: destination?.config,
+		}),
+	}))
+	const cowDisabledReason = cowEligibility.find(row => row.error)?.error
+	const bulkCOWError = cowEligibility.find(
+		row => copyOnWriteEnabled(row.selected) && row.error,
+	)?.error
 	const allActiveCOW =
 		cowRows.length > 0 && cowRows.every(row => copyOnWriteEnabled(row.selected))
 
@@ -371,7 +347,6 @@ const BulkConfigureStreamsModal = ({
 			dedupKeys: bulkStreamDefaults.dedup_keys ?? [],
 			upsertType: savedWriteSettings.type,
 			mergeStrategy: undefined,
-			cowOptions: {},
 			normalization:
 				bulkStreamDefaults.normalization ?? STREAM_DEFAULTS.normalization,
 			dropRemovedColumns: false,
@@ -429,9 +404,6 @@ const BulkConfigureStreamsModal = ({
 			}),
 			...(dirtyFields[BulkDirtyFieldKey.MergeStrategy] && {
 				mergeStrategy: bulkConfig.mergeStrategy,
-			}),
-			...(dirtyFields[BulkDirtyFieldKey.COWOptions] && {
-				cowOptions: bulkConfig.cowOptions,
 			}),
 			...(dirtyFields[BulkDirtyFieldKey.AppendMode] && {
 				appendMode: bulkConfig.appendMode,
@@ -751,11 +723,9 @@ const BulkConfigureStreamsModal = ({
 														)}
 												</div>
 											)}
-											{(dirtyFields[BulkDirtyFieldKey.MergeStrategy] ||
-												dirtyFields[BulkDirtyFieldKey.COWOptions]) && (
+											{dirtyFields[BulkDirtyFieldKey.MergeStrategy] && (
 												<MergeStrategyEditor
 													strategy={bulkConfig.mergeStrategy}
-													options={bulkConfig.cowOptions}
 													appendMode={bulkConfig.appendMode}
 													keepExisting
 												/>
@@ -1106,12 +1076,10 @@ const BulkConfigureStreamsModal = ({
 														)) && (
 														<MergeStrategyEditor
 															strategy={bulkConfig.mergeStrategy}
-															options={bulkConfig.cowOptions}
 															appendMode={bulkConfig.appendMode}
 															keepExisting
 															dirty={
-																dirtyFields[BulkDirtyFieldKey.MergeStrategy] ||
-																dirtyFields[BulkDirtyFieldKey.COWOptions]
+																dirtyFields[BulkDirtyFieldKey.MergeStrategy]
 															}
 															disabledReason={cowDisabledReason}
 															error={bulkCOWError}
@@ -1121,20 +1089,7 @@ const BulkConfigureStreamsModal = ({
 																	...prev,
 																	[BulkDirtyFieldKey.MergeStrategy]:
 																		strategy !== undefined,
-																	...(strategy === undefined && {
-																		[BulkDirtyFieldKey.COWOptions]: false,
-																	}),
 																}))
-															}}
-															onOptionsChange={options => {
-																setBulkConfig(prev => ({
-																	...prev,
-																	cowOptions: {
-																		...prev.cowOptions,
-																		...options,
-																	},
-																}))
-																markDirty(BulkDirtyFieldKey.COWOptions)
 															}}
 														/>
 													)}

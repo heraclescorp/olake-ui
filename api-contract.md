@@ -64,53 +64,33 @@ the legacy catalog or split available catalog; default policy remains selection-
 ## Iceberg upsert materialization
 
 Selected stream entries accept `merge_strategy` (`copy-on-write` or
-`merge-on-read`) and optional `cow_options`. These fields belong to the selected
-catalog in both legacy and split formats. Omitted strategy preserves MOR for
-saved/low-level configurations. New eligible PostgreSQL/native Iceberg selections
-in the UI explicitly default to COW; existing jobs and explicit MOR choices are
-not silently migrated. Append mode keeps the saved merge policy inactive.
+`merge-on-read`) in the selected catalog, in legacy or split format. Omission
+preserves MOR for saved/CLI configurations. New eligible PostgreSQL/native
+normalized CDC upsert selections in the UI explicitly default to COW; existing
+jobs, explicit MOR choices and auto-enrollment policies are unchanged. Append
+keeps the saved merge policy inactive.
 
 ```json
-{
-  "stream_name": "orders",
-  "normalization": true,
-  "append_mode": false,
-  "merge_strategy": "copy-on-write",
-  "cow_options": {
-    "flush_interval_seconds": 300,
-    "max_batch_rows": 100000,
-    "max_batch_bytes": 67108864,
-    "rewrite_concurrency": 2,
-    "materialize_existing_deletes": false
-  }
-}
+{ "stream_name": "orders", "normalization": true, "append_mode": false, "merge_strategy": "copy-on-write" }
 ```
 
-Options may be omitted to use these defaults. Numeric options must be positive
-safe integers; interval seconds cannot exceed 9,223,372,036. Limits are soft and
-flush after complete source transactions, not guaranteed wall-clock deadlines.
-Unknown nested extensions and inactive MOR preferences survive catalog round trips.
-
 Discovery advertises `streams[].stream.supports_iceberg_copy_on_write: true` on
-matching PostgreSQL builds. The UI gates COW on this capability, native Iceberg,
-normalization, CDC mode, selected compatible nonnull primary keys and source TOAST
-hydration. Missing support preserves saved choices with an explicit disable/refresh
-path. The connector validates live support; API validation of wire shape is not
-permission to bypass runtime ownership, source, key or table-shape checks.
+matching PostgreSQL builds. COW requires a source primary key and source TOAST
+hydration, not destination/index hydration. Missing capability preserves saved
+choices while allowing explicit MOR disable. Active COW hides the delete-format
+selector but preserves its saved value; COW tables do not contribute to
+`advanced_settings.index_required`, while mixed indexed MOR tables still do.
 
-Active COW hides the equality/position/DV selector without discarding its saved
-value. COW tables do not contribute to `advanced_settings.index_required`; mixed
-MOR positional/DV tables still do. Switching back restores the MOR preference.
-MOR is an explicit write-throughput/rewrite-cost alternative, subject to reader
-delete support. Existing auto-enrollment policies are unchanged.
+The writer uses existing end-of-run checkpoint/commit/recovery semantics and
+canonical `_olake_id` identity. There are no COW batching options, periodic
+checkpoints or migration controls. Existing live delete files fail before
+mutation and require a separate explicit maintenance cleanup before switching.
+No source resnapshot, slot/checkpoint reset, format downgrade or implicit table
+rewrite is performed. New tables are v2; existing v3 tables remain v3. Reader
+catalog/format compatibility must be verified separately.
 
-Live historical delete entries require explicit `materialize_existing_deletes`
-permission for a full current-view rewrite. This honors every existing delete and
-preserves the source checkpoint/slot, table UUID and schema/sort/partition metadata;
-it does not trigger a source backfill or reset. Without permission, setup fails
-before row writes. New COW tables are v2; existing v3 tables are not downgraded.
-Retained history may still reference old delete files. Reader catalog/format
-compatibility must be verified separately.
+For composite keys, `_olake_id` hashes delimiter-joined values; this existing MOR
+identity encoding is not collision-proof. Validate source key values before rollout.
 
 ## Async operations
 

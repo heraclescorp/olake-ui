@@ -1,10 +1,8 @@
 package etl
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 )
@@ -18,7 +16,6 @@ func validateCatalogCOW(selection string) error {
 		SelectedStreams map[string][]struct {
 			StreamName    string          `json:"stream_name"`
 			MergeStrategy json.RawMessage `json:"merge_strategy"`
-			COWOptions    json.RawMessage `json:"cow_options"`
 		} `json:"selected_streams"`
 	}
 	if err := json.Unmarshal([]byte(selection), &catalog); err != nil {
@@ -34,32 +31,6 @@ func validateCatalogCOW(selection string) error {
 				var strategy string
 				if err := json.Unmarshal(stream.MergeStrategy, &strategy); err != nil || (strategy != "merge-on-read" && strategy != "copy-on-write") {
 					return invalid("merge_strategy must be merge-on-read or copy-on-write (omit for merge-on-read)")
-				}
-			}
-			if len(stream.COWOptions) == 0 {
-				continue
-			}
-			var options map[string]json.RawMessage
-			if err := json.Unmarshal(stream.COWOptions, &options); err != nil || options == nil {
-				return invalid("cow_options must be an object")
-			}
-			for _, key := range []string{"flush_interval_seconds", "max_batch_rows", "max_batch_bytes", "rewrite_concurrency"} {
-				raw, exists := options[key]
-				if !exists {
-					continue
-				}
-				value, err := strconv.ParseInt(string(bytes.TrimSpace(raw)), 10, 64)
-				if err != nil || value <= 0 || value > 9007199254740991 {
-					return invalid("cow_options." + key + " must be a positive safe integer")
-				}
-				if key == "flush_interval_seconds" && value > 9223372036 {
-					return invalid("cow_options.flush_interval_seconds exceeds the supported duration")
-				}
-			}
-			if raw, exists := options["materialize_existing_deletes"]; exists {
-				raw = bytes.TrimSpace(raw)
-				if !bytes.Equal(raw, []byte("true")) && !bytes.Equal(raw, []byte("false")) {
-					return invalid("cow_options.materialize_existing_deletes must be a boolean")
 				}
 			}
 		}

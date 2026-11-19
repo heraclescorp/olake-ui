@@ -23,9 +23,6 @@ export default function MergeStrategySectionSingle({
 	const updateMergeStrategy = useStreamSelectionStore(
 		state => state.updateMergeStrategy,
 	)
-	const updateCOWOptions = useStreamSelectionStore(
-		state => state.updateCOWOptions,
-	)
 	const source = useJobConfigurationStore(state => state.selectedSource)
 	const destination = useJobConfigurationStore(
 		state => state.selectedDestination,
@@ -44,7 +41,6 @@ export default function MergeStrategySectionSingle({
 	return (
 		<MergeStrategyEditor
 			strategy={selected.merge_strategy}
-			options={selected.cow_options}
 			appendMode={selected.append_mode}
 			disabled={!!selected.disabled}
 			disabledReason={getCOWEligibilityError({
@@ -58,7 +54,6 @@ export default function MergeStrategySectionSingle({
 			onStrategyChange={strategy => {
 				if (strategy) updateMergeStrategy(identifier, strategy)
 			}}
-			onOptionsChange={options => updateCOWOptions(identifier, options)}
 		/>
 	)
 }

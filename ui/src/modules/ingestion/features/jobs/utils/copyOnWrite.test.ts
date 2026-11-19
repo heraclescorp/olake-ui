@@ -15,9 +15,7 @@ import {
 	COW_CAPABILITY_WARNING,
 	getCOWEligibilityError,
 	validateCatalogCOW,
-	validateCOWOptions,
 	withDefaultCopyOnWrite,
-	COW_MAX_FLUSH_INTERVAL_SECONDS,
 } from "./copyOnWrite"
 import {
 	buildCatalogPayload,
@@ -55,11 +53,7 @@ const selected: SelectedStream = {
 	update_type: UpsertType.DELETION_VECTOR,
 	merge_strategy: "copy-on-write",
 	selected_columns: { columns: ["id", "body"], sync_new_columns: true },
-	cow_options: {
-		max_batch_rows: 123,
-		materialize_existing_deletes: true,
-		extension: { keep: "unchanged" },
-	},
+	extension: { keep: "unchanged" },
 }
 const sourceConfig = {
 	update_method: {
@@ -82,44 +76,7 @@ function catalog(): StreamsDataStructure {
 	}
 }
 
-test("COW options reject unsafe numeric and noninteger limits", () => {
-	assert.equal(validateCOWOptions(undefined), null)
-	assert.equal(validateCOWOptions({}), null)
-	for (const key of [
-		"flush_interval_seconds",
-		"max_batch_rows",
-		"max_batch_bytes",
-		"rewrite_concurrency",
-	]) {
-		for (const value of [
-			0,
-			-1,
-			1.5,
-			Number.NaN,
-			Number.POSITIVE_INFINITY,
-			Number.MAX_SAFE_INTEGER + 1,
-		]) {
-			assert.match(
-				validateCOWOptions({ [key]: value }) ?? "",
-				/positive safe integer/,
-			)
-		}
-	}
-	assert.equal(
-		validateCOWOptions({
-			flush_interval_seconds: COW_MAX_FLUSH_INTERVAL_SECONDS,
-		}),
-		null,
-	)
-	assert.match(
-		validateCOWOptions({
-			flush_interval_seconds: COW_MAX_FLUSH_INTERVAL_SECONDS + 1,
-		}) ?? "",
-		/must not exceed/,
-	)
-})
-
-test("capability, native normalization, PK selection and source hydration gate active COW", () => {
+test("capability, normalization, source identity and hydration gate active COW", () => {
 	assert.equal(
 		getCOWEligibilityError({
 			stream,
@@ -130,6 +87,38 @@ test("capability, native normalization, PK selection and source hydration gate a
 			destinationConfig,
 		}),
 		null,
+	)
+	assert.equal(
+		getCOWEligibilityError({
+			stream,
+			selected: {
+				...selected,
+				selected_columns: { columns: ["body"], sync_new_columns: true },
+			},
+			sourceType: "postgres",
+			destinationType: "iceberg",
+		}),
+		null,
+	)
+	for (const connection of [
+		{ sourceType: "mysql", destinationType: "iceberg" },
+		{ sourceType: "postgres", destinationType: "s3" },
+	]) {
+		assert.notEqual(
+			getCOWEligibilityError({ stream, selected, ...connection }),
+			null,
+		)
+	}
+	const withoutPK = structuredClone(stream)
+	withoutPK.stream.source_defined_primary_key = []
+	assert.match(
+		getCOWEligibilityError({
+			stream: withoutPK,
+			selected,
+			sourceType: "postgres",
+			destinationType: "iceberg",
+		}) ?? "",
+		/source primary key/,
 	)
 	const unsupported = structuredClone(stream)
 	delete unsupported.stream.supports_iceberg_copy_on_write
@@ -144,7 +133,6 @@ test("capability, native normalization, PK selection and source hydration gate a
 	)
 	for (const change of [
 		{ normalization: false },
-		{ selected_columns: { columns: ["body"], sync_new_columns: true } },
 		{ sync_mode: SyncMode.FULL_REFRESH },
 	]) {
 		assert.notEqual(
@@ -172,17 +160,18 @@ test("capability, native normalization, PK selection and source hydration gate a
 		}) ?? "",
 		/source TOAST hydration/,
 	)
+	// Identity is the existing string _olake_id, not a second source-PK encoding.
 	for (const type of [["integer", "null"], ["number"], ["object"]]) {
-		const incompatible = structuredClone(stream)
-		incompatible.stream.type_schema!.properties.id.type = type
-		assert.match(
+		const canonicalIdentity = structuredClone(stream)
+		canonicalIdentity.stream.type_schema!.properties.id.type = type
+		assert.equal(
 			getCOWEligibilityError({
-				stream: incompatible,
+				stream: canonicalIdentity,
 				selected,
 				sourceType: "postgres",
 				destinationType: "iceberg",
-			}) ?? "",
-			/nonnull exact-filter/,
+			}),
+			null,
 		)
 	}
 })
@@ -206,7 +195,7 @@ test("COW never requests a row index while mixed MOR still does", () => {
 	assert.equal(hasIndexedUpsertStream(data), false)
 })
 
-test("legacy and split discovery/save preserve COW policy, options, extensions and empty sort", () => {
+test("legacy and split discovery/save preserve COW policy, extensions and empty sort", () => {
 	for (const format of [CatalogFormat.LEGACY, CatalogFormat.V2]) {
 		const data = catalog()
 		const payload = buildCatalogPayload(data, format)
@@ -216,8 +205,8 @@ test("legacy and split discovery/save preserve COW policy, options, extensions a
 				: payload.selected_streams_config,
 		)
 		assert.deepEqual(
-			saved.selected_streams.public[0].cow_options,
-			selected.cow_options,
+			saved.selected_streams.public[0].extension,
+			selected.extension,
 		)
 		assert.equal(
 			saved.selected_streams.public[0].merge_strategy,
@@ -249,8 +238,8 @@ test("legacy and split discovery/save preserve COW policy, options, extensions a
 			true,
 		)
 		assert.deepEqual(
-			reopened.selected_streams.public[0].cow_options,
-			selected.cow_options,
+			reopened.selected_streams.public[0].extension,
+			selected.extension,
 		)
 		assert.equal(
 			reopened.selected_streams.public[0].merge_strategy,
@@ -263,10 +252,17 @@ test("legacy and split discovery/save preserve COW policy, options, extensions a
 	}
 })
 
-test("single and bulk COW updates preserve MOR preferences and nested extensions", () => {
+test("single and bulk COW updates preserve MOR preferences and catalog extensions", () => {
 	const store = useStreamSelectionStore
 	store.getState().reset()
-	store.getState().initializeFromDiscovery(catalog(), CatalogFormat.V2)
+	const data = catalog()
+	data.selected_streams.public.push({
+		...selected,
+		stream_name: "mor",
+		merge_strategy: "merge-on-read",
+		update_type: UpsertType.POSITIONAL,
+	})
+	store.getState().initializeFromDiscovery(data, CatalogFormat.V2)
 	const id = { namespace: "public", streamName: "orders" }
 	store.getState().updateMergeStrategy(id, "merge-on-read")
 	assert.equal(
@@ -274,19 +270,27 @@ test("single and bulk COW updates preserve MOR preferences and nested extensions
 		"dv",
 	)
 	store.getState().updateMergeStrategy(id, "copy-on-write")
-	store.getState().updateCOWOptions(id, { rewrite_concurrency: 4 })
 	store.getState().bulkUpdateStreams([id], {
 		mergeStrategy: "copy-on-write",
-		cowOptions: { max_batch_rows: 321 },
 		upsertType: UpsertType.EQUALITY,
 	})
 	const saved = store.getState().streamsData!.selected_streams.public[0]
 	assert.equal(saved.update_type, "dv")
-	assert.deepEqual(saved.cow_options, {
-		...selected.cow_options,
-		rewrite_concurrency: 4,
-		max_batch_rows: 321,
-	})
+	assert.deepEqual(
+		store.getState().streamsData!.catalogMetadata,
+		catalog().catalogMetadata,
+	)
+	assert.deepEqual(saved.extension, selected.extension)
+	store
+		.getState()
+		.bulkUpdateStreams([id, { namespace: "public", streamName: "mor" }], {
+			upsertType: UpsertType.EQUALITY,
+		})
+	const mixed = store.getState().streamsData!.selected_streams.public
+	assert.equal(mixed[0].merge_strategy, "copy-on-write")
+	assert.equal(mixed[0].update_type, "dv")
+	assert.equal(mixed[1].merge_strategy, "merge-on-read")
+	assert.equal(mixed[1].update_type, "eq")
 	store.getState().updateMergeStrategy(id, "merge-on-read")
 	assert.equal(
 		store.getState().streamsData!.selected_streams.public[0].update_type,
