@@ -12,6 +12,8 @@ import {
 	FilterConfig,
 	UpsertType,
 	SortField,
+	MergeStrategy,
+	COWOptions,
 } from "@/modules/ingestion/common/types"
 
 import { extractNamespaceFromDestination } from "../utils"
@@ -23,6 +25,8 @@ export interface BulkStreamConfig {
 	appendMode?: boolean
 	dedupKeys?: string[]
 	upsertType?: UpsertType
+	mergeStrategy?: MergeStrategy
+	cowOptions?: COWOptions
 	normalization?: boolean
 	dropRemovedColumns?: boolean
 	partitionRegex?: string
@@ -109,6 +113,11 @@ interface StreamSelectionState {
 
 	// Only meaningful for streams in upsert mode (append_mode falsy).
 	updateUpsertType: (stream: StreamIdentifier, upsertType: UpsertType) => void
+	updateMergeStrategy: (
+		stream: StreamIdentifier,
+		strategy: MergeStrategy,
+	) => void
+	updateCOWOptions: (stream: StreamIdentifier, options: COWOptions) => void
 
 	bulkUpdateStreams: (
 		streamsToUpdate: StreamIdentifier[],
@@ -527,6 +536,49 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 			}
 		}),
 
+	updateMergeStrategy: (stream, strategy) =>
+		set(state => {
+			const catalog = state.streamsData
+			if (!catalog?.selected_streams[stream.namespace]) return state
+			return {
+				streamsData: {
+					...catalog,
+					selected_streams: {
+						...catalog.selected_streams,
+						[stream.namespace]: catalog.selected_streams[stream.namespace].map(
+							entry =>
+								entry.stream_name === stream.streamName && !entry.disabled
+									? { ...entry, merge_strategy: strategy }
+									: entry,
+						),
+					},
+				},
+			}
+		}),
+
+	updateCOWOptions: (stream, options) =>
+		set(state => {
+			const catalog = state.streamsData
+			if (!catalog?.selected_streams[stream.namespace]) return state
+			return {
+				streamsData: {
+					...catalog,
+					selected_streams: {
+						...catalog.selected_streams,
+						[stream.namespace]: catalog.selected_streams[stream.namespace].map(
+							entry =>
+								entry.stream_name === stream.streamName && !entry.disabled
+									? {
+											...entry,
+											cow_options: { ...entry.cow_options, ...options },
+										}
+									: entry,
+						),
+					},
+				},
+			}
+		}),
+
 	updateDedupKeys: (stream, keys) =>
 		set(state => {
 			if (!state.streamsData) return state
@@ -583,8 +635,19 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 					if (config.dedupKeys !== undefined) {
 						newStream = withDedupKeys(newStream, config.dedupKeys)
 					}
-					if (config.upsertType !== undefined)
+					if (
+						config.upsertType !== undefined &&
+						(config.mergeStrategy ?? newStream.merge_strategy) !==
+							"copy-on-write"
+					)
 						newStream.update_type = config.upsertType
+					if (config.mergeStrategy !== undefined)
+						newStream.merge_strategy = config.mergeStrategy
+					if (config.cowOptions !== undefined)
+						newStream.cow_options = {
+							...newStream.cow_options,
+							...config.cowOptions,
+						}
 					if (
 						config.appendMode !== undefined ||
 						config.upsertType !== undefined

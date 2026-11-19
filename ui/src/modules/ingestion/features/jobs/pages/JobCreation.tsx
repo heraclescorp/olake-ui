@@ -301,6 +301,10 @@ const JobCreation: React.FC = () => {
 					streamsData,
 					sourceConnectorPayload.type,
 					destinationConnectorPayload.type,
+					{
+						sourceConfig: sourceConnectorPayload.config,
+						destinationConfig: destinationConnectorPayload.config,
+					},
 				)
 				if (error) {
 					message.error(error)

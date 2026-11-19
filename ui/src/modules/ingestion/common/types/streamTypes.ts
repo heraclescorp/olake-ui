@@ -21,6 +21,17 @@ export enum UpsertType {
 	DELETION_VECTOR = "dv",
 }
 
+export type MergeStrategy = "merge-on-read" | "copy-on-write"
+
+export interface COWOptions {
+	flush_interval_seconds?: number
+	max_batch_rows?: number
+	max_batch_bytes?: number
+	rewrite_concurrency?: number
+	materialize_existing_deletes?: boolean
+	[key: string]: unknown
+}
+
 export interface FilterConfigCondition {
 	column: string
 	operator: FilterOperator
@@ -62,6 +73,7 @@ export interface StreamDefinition {
 	default_stream_properties: DefaultStreamProperties
 	available_update_types?: UpsertType[]
 	supports_iceberg_sort_order?: boolean
+	supports_iceberg_copy_on_write?: boolean
 	[key: string]: unknown
 }
 
@@ -109,6 +121,8 @@ export interface SelectedStream {
 	dedup_keys?: string[]
 	// Only present when the stream runs in upsert mode (append_mode falsy).
 	update_type?: UpsertType
+	merge_strategy?: MergeStrategy
+	cow_options?: COWOptions
 	use_source_column_names?: boolean
 	selected_columns?: SelectedColumns
 	filter_config?: FilterConfig

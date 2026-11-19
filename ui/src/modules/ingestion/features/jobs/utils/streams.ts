@@ -53,6 +53,8 @@ import {
 } from "./filterUtils"
 import { fromLegacyCatalog, toLegacyStreamsConfig } from "./legacyStreams"
 import { validateCatalogSortOrders } from "./sortOrder"
+import { copyOnWriteEnabled, validateCatalogCOW } from "./copyOnWrite"
+import type { COWConnectionSettings } from "./copyOnWrite"
 
 // The catalog carries the default upsert type on the stream as
 // default_stream_properties.update_type; the selected stream stores it as
@@ -459,6 +461,7 @@ export const getKafkaUpsertTypes = (sourceVersion?: string): UpsertType[] =>
 
 const usesIndexedUpsert = (stream: SelectedStream): boolean =>
 	!stream.append_mode &&
+	!copyOnWriteEnabled(stream) &&
 	!!stream.update_type &&
 	INDEXED_UPSERT_TYPES.includes(stream.update_type)
 
@@ -547,7 +550,15 @@ export const validateStreams = (
 	streamsConfig: StreamsDataStructure,
 	sourceType: string,
 	destinationType?: string,
+	connections: COWConnectionSettings = {},
 ): string | null => {
+	const cowError = validateCatalogCOW(
+		streamsConfig,
+		sourceType,
+		destinationType,
+		connections,
+	)
+	if (cowError) return cowError
 	const sortError = validateCatalogSortOrders(streamsConfig, destinationType)
 	if (sortError) {
 		return sortError

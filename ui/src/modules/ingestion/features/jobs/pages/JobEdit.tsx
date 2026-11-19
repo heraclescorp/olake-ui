@@ -334,6 +334,10 @@ const JobEdit: React.FC = () => {
 			streamsData,
 			sourceSnapshot.type,
 			getConnectorInLowerCase(destinationSnapshot.type),
+			{
+				sourceConfig: sourceSnapshot.config,
+				destinationConfig: destinationSnapshot.config,
+			},
 		)
 		if (streamValidationError) {
 			message.error(streamValidationError)
@@ -394,6 +398,10 @@ const JobEdit: React.FC = () => {
 				streamsData,
 				sourceSnapshot.type,
 				getConnectorInLowerCase(destinationSnapshot.type),
+				{
+					sourceConfig: sourceSnapshot.config,
+					destinationConfig: destinationSnapshot.config,
+				},
 			)
 		if (submitValidationError) {
 			message.error(submitValidationError)

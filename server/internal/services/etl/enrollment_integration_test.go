@@ -102,6 +102,7 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 			*selection = strings.Replace(*selection, `{`, `{"default_sort_order":`+catalogSortPreset+`,"extension":{"large":9007199254740993},`, 1)
 			*selection = strings.Replace(*selection, `"stream_name":"orders"`, `"stream_name":"orders","sort_order":`+catalogCustomSort, 1)
 			*selection = strings.Replace(*selection, `"public":[`, `"public":[{"stream_name":"unavailable","sort_order":[]},`, 1)
+			*selection = strings.Replace(*selection, `"stream_name":"orders"`, `"stream_name":"orders","merge_strategy":"copy-on-write","cow_options":{"flush_interval_seconds":300,"max_batch_rows":100000,"max_batch_bytes":67108864,"rewrite_concurrency":2,"materialize_existing_deletes":true,"extension":{"large":9007199254740993}}`, 1)
 			job.ID, job.SourceID, job.DestID = 0, source.ID, destination.ID
 			job.Source, job.Destination = nil, nil
 			job.Name, job.Frequency = "catalog save", "@hourly"

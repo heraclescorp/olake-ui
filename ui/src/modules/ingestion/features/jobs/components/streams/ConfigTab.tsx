@@ -8,6 +8,7 @@ import NormalizationSectionSingle from "./NormalizationSectionSingle"
 import SyncModeSectionSingle from "./SyncModeSectionSingle"
 import UpsertTypeSectionSingle from "./UpsertTypeSectionSingle"
 import SortOrderSectionSingle from "./SortOrderSectionSingle"
+import MergeStrategySectionSingle from "./MergeStrategySectionSingle"
 import { CARD_STYLE } from "../../constants"
 
 interface ConfigTabProps {
@@ -43,6 +44,10 @@ const ConfigTab = ({
 				/>
 			</div>
 			<NormalizationSectionSingle />
+			<MergeStrategySectionSingle
+				sourceType={sourceType}
+				destinationType={destinationType}
+			/>
 			<DropRemovedColumnsSectionSingle destinationType={destinationType} />
 			<SortOrderSectionSingle destinationType={destinationType} />
 			<DataFilterSectionSingle />

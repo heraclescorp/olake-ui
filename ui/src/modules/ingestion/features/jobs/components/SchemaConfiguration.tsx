@@ -42,6 +42,7 @@ import {
 	parseDiscoverResponse,
 	shouldUseFilterConfig,
 } from "../utils/streams"
+import { withDefaultCopyOnWrite } from "../utils/copyOnWrite"
 
 const STREAM_FILTERS = ["All tables", "Selected", "Not Selected"]
 
@@ -149,7 +150,16 @@ const SchemaConfiguration: React.FC<SchemaConfigurationProps> = ({
 							fromJobEditFlow,
 						)
 
-					initializeFromDiscovery(data, parsed.format)
+					initializeFromDiscovery(
+						withDefaultCopyOnWrite({
+							catalog: data,
+							existingJob: fromJobEditFlow,
+							sourceType: sourceConnector,
+							destinationType,
+							sourceConfig,
+						}),
+						parsed.format,
+					)
 				},
 				onError: error => {
 					setDiscovering(false)
