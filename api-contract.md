@@ -81,6 +81,12 @@ choices while allowing explicit MOR disable. Active COW hides the delete-format
 selector but preserves its saved value; COW tables do not contribute to
 `advanced_settings.index_required`, while mixed indexed MOR tables still do.
 
+In Bulk Configure, **Configure COW for eligible job tables** prepares the mode
+change for enabled tables that meet the discovered eligibility checks, shows
+skipped table names and reasons, and requires review/apply. Append-mode and
+unselected tables remain unchanged. Discovery does not inspect current Iceberg
+delete files: a selected table can still fail at runtime until separately cleaned.
+
 The writer uses existing end-of-run checkpoint/commit/recovery semantics and
 canonical `_olake_id` identity. There are no COW batching options, periodic
 checkpoints or migration controls. Existing live delete files fail before

@@ -12,7 +12,7 @@ import {
 } from "@phosphor-icons/react"
 import { Button, Modal, Tooltip } from "antd"
 import clsx from "clsx"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { DESTINATION_INTERNAL_TYPES } from "@/modules/ingestion/common/constants"
 import {
@@ -175,6 +175,10 @@ const BulkConfigureStreamsModal = ({
 	const [bulkSelectedStreams, setBulkSelectedStreams] = useState<
 		StreamIdentifier[]
 	>([])
+	const prepareCOW = useRef(false)
+	const [cowSkipped, setCOWSkipped] = useState<
+		{ name: string; reason: string }[] | null
+	>(null)
 
 	// Local bulk config state
 	const [bulkConfig, setBulkConfig] = useState<BulkConfig>(INITIAL_BULK_CONFIG)
@@ -313,6 +317,8 @@ const BulkConfigureStreamsModal = ({
 			setDirtyFields(INITIAL_DIRTY_FIELDS)
 			setIsSyncIngestionCollapsed(true)
 			setIsSelectedStreamsExpanded(false)
+			prepareCOW.current = false
+			setCOWSkipped(null)
 		}
 	}, [open])
 
@@ -362,6 +368,16 @@ const BulkConfigureStreamsModal = ({
 		setIsSummaryStreamsExpanded(false)
 	}, [selectionKey])
 
+	useEffect(() => {
+		if (step !== "apply-configurations" || !prepareCOW.current) return
+		prepareCOW.current = false
+		setBulkConfig(prev => ({ ...prev, mergeStrategy: "copy-on-write" }))
+		setDirtyFields(prev => ({
+			...prev,
+			[BulkDirtyFieldKey.MergeStrategy]: true,
+		}))
+	}, [step, selectionKey])
+
 	const getStepTitle = () => {
 		if (step === "select-streams") return "Select Streams"
 		if (step === "apply-configurations") return "Apply Configurations"
@@ -394,6 +410,49 @@ const BulkConfigureStreamsModal = ({
 			[BulkDirtyFieldKey.AppendMode]: false,
 			[BulkDirtyFieldKey.UpsertType]: false,
 		}))
+	}
+
+	const selectEligibleCOW = (): void => {
+		const eligible: StreamIdentifier[] = []
+		const skipped: { name: string; reason: string }[] = []
+		const streams = new Map(
+			streamsData?.streams.map(entry => [
+				JSON.stringify([entry.stream.namespace ?? "", entry.stream.name]),
+				entry,
+			]),
+		)
+		for (const [namespace, entries] of Object.entries(
+			streamsData?.selected_streams ?? {},
+		)) {
+			for (const selected of entries) {
+				if (selected.disabled) continue
+				const stream = streams.get(
+					JSON.stringify([namespace, selected.stream_name]),
+				)
+				const reason = !stream
+					? "Refresh discovery: source table metadata is unavailable."
+					: selected.append_mode
+						? "Append mode does not use upserts."
+						: getCOWEligibilityError({
+								stream,
+								selected,
+								sourceType,
+								destinationType,
+								sourceConfig: source?.config,
+								destinationConfig: destination?.config,
+							})
+				if (reason)
+					skipped.push({
+						name: `${namespace ? `${namespace}.` : ""}${selected.stream_name}`,
+						reason,
+					})
+				else eligible.push({ namespace, streamName: selected.stream_name })
+			}
+		}
+		prepareCOW.current = eligible.length > 0
+		setCOWSkipped(skipped)
+		setBulkSelectedStreams(eligible)
+		if (eligible.length > 0) setStep("apply-configurations")
 	}
 
 	const handleApplyChanges = () => {
@@ -593,14 +652,75 @@ const BulkConfigureStreamsModal = ({
 						{getStepTitle()}
 					</div>
 
+					{step !== "select-streams" && cowSkipped && (
+						<div
+							className="border-b border-olake-border px-8 py-2"
+							role="status"
+						>
+							{bulkSelectedStreams.length} eligible; {cowSkipped.length}{" "}
+							skipped. Destination delete files are checked when the job runs.
+							{cowSkipped.length > 0 && (
+								<details>
+									<summary>Skipped tables and reasons</summary>
+									<ul>
+										{cowSkipped.map(row => (
+											<li key={row.name}>
+												{row.name}: {row.reason}
+											</li>
+										))}
+									</ul>
+								</details>
+							)}
+						</div>
+					)}
 					<div className="min-h-0 flex-1">
 						{step === "select-streams" ? (
-							<div className="h-full">
-								<BulkStreamSelectorList
-									streamsData={streamsData}
-									bulkSelectedStreams={bulkSelectedStreams}
-									onChange={setBulkSelectedStreams}
-								/>
+							<div className="flex h-full flex-col">
+								{sourceType?.toLowerCase() === "postgres" &&
+									destinationType?.toLowerCase() === "iceberg" && (
+										<div className="border-b border-neutral-border px-8 py-3">
+											<Button onClick={selectEligibleCOW}>
+												Configure COW for eligible job tables
+											</Button>
+											<p className="mt-2 text-xs text-olake-text-secondary">
+												Only enabled upsert tables are considered. Review before
+												applying; existing live delete files require separate
+												cleanup.
+											</p>
+										</div>
+									)}
+								{cowSkipped && bulkSelectedStreams.length === 0 && (
+									<div
+										className="px-8 py-2"
+										role="status"
+									>
+										No eligible tables. {cowSkipped.length} skipped; see reasons
+										below.
+									</div>
+								)}
+								{cowSkipped && (
+									<details className="px-8">
+										<summary>Skipped tables</summary>
+										<ul>
+											{cowSkipped.map(row => (
+												<li key={row.name}>
+													{row.name}: {row.reason}
+												</li>
+											))}
+										</ul>
+									</details>
+								)}
+								<div className="min-h-0 flex-1">
+									<BulkStreamSelectorList
+										streamsData={streamsData}
+										bulkSelectedStreams={bulkSelectedStreams}
+										onChange={value => {
+											prepareCOW.current = false
+											setCOWSkipped(null)
+											setBulkSelectedStreams(value)
+										}}
+									/>
+								</div>
 							</div>
 						) : step === "summary" ? (
 							<div className="h-full overflow-y-auto px-8 py-5">
