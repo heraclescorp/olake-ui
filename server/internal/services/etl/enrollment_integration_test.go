@@ -95,6 +95,13 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 	for _, split := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "split"}[split], func(t *testing.T) {
 			job := enrollmentJob(t, split)
+			selection := job.StreamsConfig
+			if split {
+				selection = job.SelectedStreamsConfig
+			}
+			*selection = strings.Replace(*selection, `{`, `{"default_sort_order":`+catalogSortPreset+`,"extension":{"large":9007199254740993},`, 1)
+			*selection = strings.Replace(*selection, `"stream_name":"orders"`, `"stream_name":"orders","sort_order":`+catalogCustomSort, 1)
+			*selection = strings.Replace(*selection, `"public":[`, `"public":[{"stream_name":"unavailable","sort_order":[]},`, 1)
 			job.ID, job.SourceID, job.DestID = 0, source.ID, destination.ID
 			job.Source, job.Destination = nil, nil
 			job.Name, job.Frequency = "catalog save", "@hourly"
@@ -148,6 +155,12 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			savedCatalog := fresh.StreamsCatalog()
+			for _, pair := range [][2]string{{savedCatalog.Streams, req.StreamsConfig}, {savedCatalog.Available, req.AvailableStreamsConfig}, {savedCatalog.Selected, req.SelectedStreamsConfig}} {
+				if pair[0] != "" || pair[1] != "" {
+					assertJSONEqual(t, []byte(pair[0]), []byte(pair[1]))
+				}
+			}
 			assertJSONEqual(t, []byte(fresh.State), []byte(job.State))
 			if fresh.SourceID != source.ID || fresh.DestID != destination.ID {
 				t.Fatal("catalog save changed driver references")
@@ -161,6 +174,35 @@ func TestEnrollmentCatalogSaveAndResyncFence(t *testing.T) {
 			}
 			if err := service.UpdateJob(context.Background(), req, job.ProjectID, job.ID, &actor.ID); !errors.Is(err, constants.ErrCatalogRevision) {
 				t.Fatalf("stale catalog save accepted: %v", err)
+			}
+			for _, sortEdit := range []struct{ from, to string }{
+				{`"default_sort_order":` + catalogSortPreset, `"default_sort_order":[]`},
+				{`"default_sort_order":[]`, `"default_sort_order":` + catalogSortPreset},
+				{`"sort_order":` + catalogCustomSort, `"sort_order":[]`},
+				{`"sort_order":[],`, ""},
+			} {
+				req.CatalogRevision, err = fresh.CatalogRevision()
+				if err != nil {
+					t.Fatal(err)
+				}
+				edited := &req.StreamsConfig
+				if split {
+					edited = &req.SelectedStreamsConfig
+				}
+				*edited = strings.Replace(*edited, sortEdit.from, sortEdit.to, 1)
+				if err := service.UpdateJob(context.Background(), req, job.ProjectID, job.ID, &actor.ID); err != nil {
+					t.Fatalf("sort-only catalog save failed: %v", err)
+				}
+				fresh, err = db.GetJobByID(job.ID, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reopened := fresh.StreamsCatalog().Streams
+				if split {
+					reopened = fresh.StreamsCatalog().Selected
+				}
+				assertJSONEqual(t, []byte(reopened), []byte(*edited))
+				assertJSONEqual(t, []byte(fresh.State), []byte(job.State))
 			}
 			_, release, err := db.BeginCatalogEdit(context.Background(), job.ID)
 			if err != nil {

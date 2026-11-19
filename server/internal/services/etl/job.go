@@ -551,7 +551,8 @@ func (s Service) GetStreamDifference(ctx context.Context, _ string, jobID int, r
 
 // validateStreamsFormat rejects a catalog that: is not exactly one format (streams, or available and
 // selected together); uses the split format on a source that does not support it; or downgrades a
-// split-catalog job to legacy.
+// split-catalog job to legacy. Sort validation checks only wire structure; the connector owns
+// source-field eligibility and destination support.
 func validateStreamsFormat(streamsConfig, available, selected, sourceVersion string, existingJob *models.Job) error {
 	split := available != "" && selected != ""
 	switch {
@@ -568,6 +569,68 @@ func validateStreamsFormat(streamsConfig, available, selected, sourceVersion str
 	}
 	if !split && existingJob != nil && existingJob.StreamsCatalog().IsSplit() {
 		return fmt.Errorf("%w: job uses the split streams format, set available_streams_config and selected_streams_config", constants.ErrStreamsFormat)
+	}
+	selection := streamsConfig
+	if split {
+		selection = selected
+	}
+	return validateCatalogSortOrders(selection)
+}
+
+func validateCatalogSortOrders(selection string) error {
+	var catalog struct {
+		DefaultSortOrder json.RawMessage `json:"default_sort_order"`
+		SelectedStreams  map[string][]struct {
+			StreamName string          `json:"stream_name"`
+			SortOrder  json.RawMessage `json:"sort_order"`
+		} `json:"selected_streams"`
+	}
+	if err := json.Unmarshal([]byte(selection), &catalog); err != nil {
+		return fmt.Errorf("%w: invalid selected catalog: %s", constants.ErrStreamsFormat, err)
+	}
+	if err := validateSortOrderStructure(catalog.DefaultSortOrder, "default_sort_order"); err != nil {
+		return err
+	}
+	for namespace, streams := range catalog.SelectedStreams {
+		for _, stream := range streams {
+			if len(stream.SortOrder) == 0 {
+				continue
+			}
+			if err := validateSortOrderStructure(stream.SortOrder, fmt.Sprintf("%s.%s.sort_order", namespace, stream.StreamName)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSortOrderStructure(raw json.RawMessage, field string) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	invalid := func(reason string) error {
+		return fmt.Errorf("%w: %s %s", constants.ErrStreamsFormat, field, reason)
+	}
+	var order []struct {
+		Column    string `json:"column"`
+		Direction string `json:"direction"`
+		NullOrder string `json:"null_order"`
+	}
+	if err := json.Unmarshal(raw, &order); err != nil || order == nil {
+		return invalid("must be an array of sort fields (omit to inherit, [] for unsorted)")
+	}
+	seen := make(map[string]bool, len(order))
+	for _, key := range order {
+		if strings.TrimSpace(key.Column) == "" || seen[key.Column] {
+			return invalid("must contain nonblank, unique columns")
+		}
+		seen[key.Column] = true
+		if key.Direction != "asc" && key.Direction != "desc" {
+			return invalid("direction must be asc or desc")
+		}
+		if key.NullOrder != "nulls-first" && key.NullOrder != "nulls-last" {
+			return invalid("null_order must be nulls-first or nulls-last")
+		}
 	}
 	return nil
 }

@@ -142,10 +142,10 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 		return recoveryNotReady(result, reset)
 	}
 	result.Status, result.CanReconcile = "awaiting_reconciliation", true
-	result.Message = "Reconcile this same operation to check its immutable completion evidence. Known unpublished resyncs and settled ordinary runs can retire; uncertain resyncs use read-only publication recovery. Unknown ordinary receipts require independently established remote-outcome evidence and cannot be force-unlocked or reclassified from logs. A pending handoff remains bound."
+	result.Message = "Reconcile this same operation using its frozen catalog and saved checkpoint. After exact runtime retirement, eligible ordinary PostgreSQL to native REST/S3 Tables CDC recovery reads committed table checkpoints and identity markers, writes fresh fencing snapshots, and replays only missing transaction ranges. Missing prior helper receipts or server-pin files do not alone prevent catalog-based recovery. Settlement still requires a confirmed common checkpoint. Unsupported or inconsistent evidence remains locked; the schedule is not resumed."
 	if previousRecoveryFailed || record.Outcome == "recovery" {
 		result.Status = "blocked"
-		result.Message = "The last recovery run ended without retiring this owner. The remote outcome is still unconfirmed. Inspect recovery worker logs and restore access to the immutable receipt or independently establish the remote outcome with the connector/catalog operator. After that prerequisite is resolved, Reconcile rechecks the same operation; it never force-clears ownership or treats logs as proof."
+		result.Message = "The last recovery run ended without retiring this owner. Reconcile rechecks exact runtime retirement, immutable inputs, committed table checkpoints and source-identity markers. Eligible ordinary CDC recovery can retry despite missing prior helper receipts or server-pin files; it fences tables and replays missing ranges rather than blindly overwriting newer state. Missing WAL, inconsistent metadata or identity changes remain blockers. Resync publication recovery remains read-only. Ownership is retained until settlement is proven; the schedule is not resumed."
 	}
 	if !reset {
 		return result, nil
@@ -165,7 +165,7 @@ func (s Service) ReconcileJobExecution(ctx context.Context, projectID string, jo
 		return result, fmt.Errorf("reconciliation reset returned no controlling run identity; refresh status")
 	}
 	result.Status, result.CanReconcile, result.RecoveryRunID = "reconciling", false, response.RunId
-	result.Message = "Reconciliation was accepted, not completed. The worker must still prove the remote outcome and exact resource retirement; ownership and any pending handoff remain protected until then."
+	result.Message = "Reconciliation was accepted, not completed. The worker must still validate recovery eligibility and prove the remote outcome, final checkpoint and exact resource retirement. Ownership and any pending handoff remain protected until then; the schedule is not resumed."
 	return result, nil
 }
 

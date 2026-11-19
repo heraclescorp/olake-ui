@@ -1,6 +1,7 @@
 package reconciler
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,7 @@ func TestParseStreamsCM(t *testing.T) {
 		wantErr string
 	}{
 		{name: "selection only", config: userSelectedStreams},
+		{name: "sort policies and extension metadata", config: `{"default_sort_order":[{"column":"created_at","direction":"asc","null_order":"nulls-last"}],"extension":{"keep":9007199254740993},"selected_streams":{"public":[{"stream_name":"inherit"},{"stream_name":"unsorted","sort_order":[]},{"stream_name":"custom","sort_order":[{"column":"amount","direction":"desc","null_order":"nulls-first"},{"column":"id","direction":"asc","null_order":"nulls-last"}]}]}}`},
 		{name: "empty streams array is not legacy", config: `{"streams":[],"selected_streams":{"public":[]}}`},
 		{name: "null streams is not legacy", config: `{"streams":null,"selected_streams":{"public":[]}}`},
 		{name: "invalid JSON", config: `{"selected_streams":`, wantErr: "invalid streams config"},
@@ -37,4 +39,26 @@ func TestParseStreamsCM(t *testing.T) {
 			assert.Empty(t, catalog.Streams)
 		})
 	}
+}
+
+func TestGitOpsSortPoliciesSurviveDiscoverCreateAndUpdate(t *testing.T) {
+	const preset = `[{"column":"created_at","direction":"asc","null_order":"nulls-last"}]`
+	selection := `{"default_sort_order":` + preset + `,"extension":{"keep":9007199254740993},"selected_streams":{"public":[{"stream_name":"users","sort_order":[{"column":"id","direction":"desc","null_order":"nulls-first"}]},{"stream_name":"unavailable","sort_order":[]},{"stream_name":"inherit"}]}}`
+	e, _, _ := newJobTestEnv(t, nil)
+	e.setData(streamsConfigMap, streamsManifestData(jobConfigMap, selection))
+	e.reconcileJob(jobConfigMap)
+	if !assert.Equal(t, PhaseReady, e.phaseOf(jobConfigMap)) || !assert.Len(t, createJobRequests(e.etl), 1) {
+		return
+	}
+	assert.Equal(t, selection, createJobRequests(e.etl)[0].SelectedStreamsConfig)
+	assert.Equal(t, selection, *e.etl.jobs["orders"].SelectedStreamsConfig)
+	e.resetRecordings()
+	selection = strings.Replace(selection, `"default_sort_order":`+preset, `"default_sort_order":[]`, 1)
+	e.setData(streamsConfigMap, streamsManifestData(jobConfigMap, selection))
+	e.reconcileJob(jobConfigMap)
+	if !assert.Equal(t, PhaseReady, e.phaseOf(jobConfigMap)) || !assert.Len(t, updateJobRequests(e.etl), 1) {
+		return
+	}
+	assert.Equal(t, selection, updateJobRequests(e.etl)[0].SelectedStreamsConfig)
+	assert.Equal(t, selection, *e.etl.jobs["orders"].SelectedStreamsConfig)
 }

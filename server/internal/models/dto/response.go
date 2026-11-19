@@ -176,6 +176,7 @@ type JobExecutionRecovery struct {
 	Phase          string `json:"phase,omitempty"`
 	Outcome        string `json:"outcome,omitempty"`
 	TemporalStatus string `json:"temporal_status,omitempty"`
+	// CanReconcile permits a same-operation reset, not a claim of connector recovery eligibility or success.
 	CanReconcile   bool   `json:"can_reconcile"`
 	Message        string `json:"message"`
 	LastError      string `json:"last_error,omitempty"`

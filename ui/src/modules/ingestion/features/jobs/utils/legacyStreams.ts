@@ -1,7 +1,6 @@
-// Deprecated: legacy streams.json support for sources below MinStreamsV2Version.
-// Backward compatibility only: new v2 fields/features are not carried into the
-// legacy format and must be version-gated in the UI. Delete once v2 is the minimum.
+// Legacy streams.json adapters keep selected catalog policy and extension metadata.
 import {
+	LegacyStreamsCatalog,
 	SelectedStreamsByNamespace,
 	StreamsDataStructure,
 	StreamsV2Catalog,
@@ -10,8 +9,12 @@ import {
 export const fromLegacyCatalog = ({
 	streams,
 	selected_streams,
-}: StreamsDataStructure): StreamsV2Catalog => ({
+	default_sort_order,
+	...metadata
+}: LegacyStreamsCatalog): StreamsV2Catalog => ({
 	available_streams: { streams },
+	default_sort_order,
+	catalogMetadata: { available: {}, selected: metadata },
 	selected_streams: Object.fromEntries(
 		Object.entries(selected_streams ?? {}).map(([namespace, entries]) => [
 			namespace,
@@ -23,12 +26,12 @@ export const fromLegacyCatalog = ({
 	),
 })
 
-// Legacy drivers read sync_mode, cursor_field and destination_database from
-// streams[], so copy each entry's values back onto its stream.
+// Legacy drivers read routing and sync fields from streams[].
 export const toLegacyStreamsConfig = (
 	streamsData: StreamsDataStructure,
 	selectedStreams: SelectedStreamsByNamespace,
 ): string => {
+	const { catalogMetadata, default_sort_order, ...catalog } = streamsData
 	const streams = streamsData.streams.map(s => {
 		const entry = streamsData.selected_streams[s.stream.namespace || ""]?.find(
 			e => e.stream_name === s.stream.name,
@@ -45,5 +48,11 @@ export const toLegacyStreamsConfig = (
 		return { ...s, stream }
 	})
 
-	return JSON.stringify({ streams, selected_streams: selectedStreams })
+	return JSON.stringify({
+		...catalog,
+		...catalogMetadata?.selected,
+		streams,
+		selected_streams: selectedStreams,
+		default_sort_order,
+	})
 }

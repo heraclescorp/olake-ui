@@ -11,6 +11,7 @@ import {
 	SyncMode,
 	FilterConfig,
 	UpsertType,
+	SortField,
 } from "@/modules/ingestion/common/types"
 
 import { extractNamespaceFromDestination } from "../utils"
@@ -28,6 +29,7 @@ export interface BulkStreamConfig {
 	filterValue?: string
 	filterConfig?: FilterConfig
 	useSourceColumnNames?: boolean
+	sortOrder?: SortField[]
 }
 
 interface StreamSelectionState {
@@ -85,6 +87,11 @@ interface StreamSelectionState {
 	) => void
 
 	updatePartitionRegex: (stream: StreamIdentifier, regex: string) => void
+	updateDefaultSortOrder: (order: SortField[] | undefined) => void
+	updateSortOrder: (input: {
+		stream: StreamIdentifier
+		order: SortField[] | undefined
+	}) => void
 
 	// Empty string removes the `filter` key entirely.
 	updateFilter: (stream: StreamIdentifier, filterValue: string) => void
@@ -178,6 +185,51 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 
 	setDiscovering: loading => set({ isDiscovering: loading }),
 	setDiscoverError: error => set({ discoverError: error }),
+	updateDefaultSortOrder: (order): void =>
+		set(state => {
+			if (!state.streamsData) {
+				return state
+			}
+			const streamsData = { ...state.streamsData }
+			if (order === undefined) {
+				delete streamsData.default_sort_order
+			} else {
+				streamsData.default_sort_order = order
+			}
+			return { streamsData }
+		}),
+
+	updateSortOrder: ({ stream, order }): void =>
+		set(state => {
+			if (!state.streamsData) {
+				return state
+			}
+			const catalog = state.streamsData
+			const entries = catalog.selected_streams[stream.namespace]
+			if (!entries) {
+				return state
+			}
+			return {
+				streamsData: {
+					...catalog,
+					selected_streams: {
+						...catalog.selected_streams,
+						[stream.namespace]: entries.map((entry): SelectedStream => {
+							if (entry.stream_name !== stream.streamName) {
+								return entry
+							}
+							const updated = { ...entry }
+							if (order === undefined) {
+								delete updated.sort_order
+							} else {
+								updated.sort_order = order
+							}
+							return updated
+						}),
+					},
+				},
+			}
+		}),
 
 	toggleStream: (stream, checked) =>
 		set(state => {
@@ -552,6 +604,13 @@ export const useStreamSelectionStore = create<StreamSelectionState>()(set => ({
 						newStream.partition_regex = config.partitionRegex
 					if (config.useSourceColumnNames !== undefined)
 						newStream.use_source_column_names = config.useSourceColumnNames
+					if ("sortOrder" in config) {
+						if (config.sortOrder === undefined) {
+							delete newStream.sort_order
+						} else {
+							newStream.sort_order = config.sortOrder
+						}
+					}
 					newStream.disabled = false
 
 					// Only touch filter fields if filter was explicitly included in the config
