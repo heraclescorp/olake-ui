@@ -1,4 +1,5 @@
 import UpsertTypeSectionView from "./UpsertTypeSectionView"
+import { copyOnWriteEnabled } from "../../utils/copyOnWrite"
 import {
 	selectActiveSelectedStream,
 	selectActiveStreamData,
@@ -29,6 +30,7 @@ const UpsertTypeSectionSingle = ({
 	)
 
 	if (!storeStream || !storeSelectedStream) return null
+	if (copyOnWriteEnabled(storeSelectedStream)) return null
 
 	return (
 		<UpsertTypeSectionView

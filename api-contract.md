@@ -61,6 +61,52 @@ sort policy can be saved. The marker belongs to discovered stream definitions in
 the legacy catalog or split available catalog; default policy remains selection-owned.
 
 
+## Iceberg upsert materialization
+
+Selected stream entries accept `merge_strategy` (`copy-on-write` or
+`merge-on-read`) in the selected catalog, in legacy or split format. Omission
+preserves MOR for saved/CLI configurations. New eligible PostgreSQL/native
+normalized CDC upsert selections in the UI explicitly default to COW; existing
+jobs, explicit MOR choices and auto-enrollment policies are unchanged. Append
+keeps the saved merge policy inactive.
+
+```json
+{ "stream_name": "orders", "normalization": true, "append_mode": false, "merge_strategy": "copy-on-write" }
+```
+
+Discovery advertises `streams[].stream.supports_iceberg_copy_on_write: true` on
+matching PostgreSQL builds. COW requires a source primary key and source TOAST
+hydration, not destination/index hydration. Missing capability preserves saved
+choices while allowing explicit MOR disable. Active COW hides the delete-format
+selector but preserves its saved value; COW tables do not contribute to
+`advanced_settings.index_required`, while mixed indexed MOR tables still do.
+
+In Bulk Configure, **Configure COW for eligible job tables** prepares the mode
+change for enabled tables that meet the discovered eligibility checks, shows
+skipped table names and reasons, and requires review/apply. Append-mode and
+unselected tables remain unchanged. Discovery does not inspect current Iceberg
+delete files: a selected table can still fail at runtime until separately cleaned.
+
+Automatic enrollment has a separate optional
+`auto_table_enrollment.defaults.merge_strategy` (`copy-on-write` or
+`merge-on-read`); omission retains the existing MOR behavior. COW requires
+normalized upsert and source TOAST. Newly discovered tables without a primary
+key or other prerequisites are skipped with a reason in job logs. Old table
+settings, exclusions, and checkpoints are unchanged. Selecting COW preserves
+the inactive MOR delete format; mixed jobs retain any index still required by
+existing MOR tables. The connector, worker, and UI must all support this field.
+
+The writer uses existing end-of-run checkpoint/commit/recovery semantics and
+canonical `_olake_id` identity. There are no COW batching options, periodic
+checkpoints or migration controls. Existing live delete files fail before
+mutation and require a separate explicit maintenance cleanup before switching.
+No source resnapshot, slot/checkpoint reset, format downgrade or implicit table
+rewrite is performed. New tables are v2; existing v3 tables remain v3. Reader
+catalog/format compatibility must be verified separately.
+
+For composite keys, `_olake_id` hashes delimiter-joined values; this existing MOR
+identity encoding is not collision-proof. Validate source key values before rollout.
+
 ## Async operations
 
 Spec (`sources/spec`, `destinations/spec`), test connection (`sources/test`, `destinations/test`),
@@ -156,7 +202,8 @@ POST, before any operation starts.
 ### Get All Version Of Source 
 - **Endpoint**: `/api/v1/project/:projectid/sources/versions`
 - **Method**: GET
-- **Description**: Give spec based on source type
+- **Description**: List available connector versions for the source type.
+- **ECR discovery**: Lists tagged images across all result pages and applies the existing version filter. Empty pages with a continuation token do not end discovery; a later-page registry error fails the lookup rather than returning partial versions.
 - **Headers**: `Authorization: Bearer <token>`
 - **Request Body**:
   ```json

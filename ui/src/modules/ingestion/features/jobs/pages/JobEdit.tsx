@@ -334,6 +334,10 @@ const JobEdit: React.FC = () => {
 			streamsData,
 			sourceSnapshot.type,
 			getConnectorInLowerCase(destinationSnapshot.type),
+			{
+				sourceConfig: sourceSnapshot.config,
+				destinationConfig: destinationSnapshot.config,
+			},
 		)
 		if (streamValidationError) {
 			message.error(streamValidationError)
@@ -394,6 +398,10 @@ const JobEdit: React.FC = () => {
 				streamsData,
 				sourceSnapshot.type,
 				getConnectorInLowerCase(destinationSnapshot.type),
+				{
+					sourceConfig: sourceSnapshot.config,
+					destinationConfig: destinationSnapshot.config,
+				},
 			)
 		if (submitValidationError) {
 			message.error(submitValidationError)
@@ -405,6 +413,7 @@ const JobEdit: React.FC = () => {
 			if (enrollment.supported || advancedSettings?.auto_table_enrollment) {
 				const result = buildEnrollmentPolicy({
 					...enrollment,
+					sourceConfig: sourceSnapshot.config,
 					catalogRevision: originalCatalogRevision.current,
 					requireRevision:
 						enrollment.draft.enabled ||

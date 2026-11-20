@@ -1,5 +1,5 @@
 import { LogEntry } from "@/common/types"
-import { UpsertType } from "@/modules/ingestion/common/types"
+import { MergeStrategy, UpsertType } from "@/modules/ingestion/common/types"
 
 export interface Job {
 	id: number
@@ -179,15 +179,18 @@ export interface JobTableProps {
 export interface AutoTableEnrollmentSchema {
 	namespace: string
 	destination_database: string
+	[key: string]: unknown
 }
 
 export interface AutoTableEnrollmentDefaults {
 	normalization: boolean
 	append_mode: boolean
 	update_type: UpsertType
+	merge_strategy?: MergeStrategy
 	sync_new_columns: boolean
 	// Optional for the connector: absent means off.
 	drop_removed_columns?: boolean
+	[key: string]: unknown
 }
 
 export type AutoTableEnrollmentPolicy =
@@ -195,11 +198,13 @@ export type AutoTableEnrollmentPolicy =
 			enabled: true
 			schemas: AutoTableEnrollmentSchema[]
 			defaults: AutoTableEnrollmentDefaults
+			[key: string]: unknown
 	  }
 	| {
 			enabled: false
 			schemas?: AutoTableEnrollmentSchema[]
 			defaults?: AutoTableEnrollmentDefaults
+			[key: string]: unknown
 	  }
 export interface AdvancedSettings {
 	max_discover_threads?: number | null
@@ -209,6 +214,7 @@ export interface AdvancedSettings {
 	// Engines that will read the destination tables.
 	target_query_engines?: string[]
 	auto_table_enrollment?: AutoTableEnrollmentPolicy
+	[key: string]: unknown
 }
 
 export interface JobConfigurationProps {

@@ -15,6 +15,7 @@ import {
 	isUseSourceColumnNamesSupported,
 } from "../../utils"
 import RenderTypeItems from "../RenderTypeItems"
+import { copyOnWriteEnabled } from "../../utils/copyOnWrite"
 
 interface StreamsSchemaProps {
 	sourceVersion: string
@@ -49,7 +50,9 @@ const StreamsSchema = ({ sourceVersion }: StreamsSchemaProps) => {
 
 	const isDedupKeyLocked = (name: string) =>
 		!selectedStream.append_mode &&
-		(selectedStream.dedup_keys ?? []).includes(name)
+		((selectedStream.dedup_keys ?? []).includes(name) ||
+			(copyOnWriteEnabled(selectedStream) &&
+				(streamData.stream.source_defined_primary_key ?? []).includes(name)))
 
 	const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
 		const query = event.target.value

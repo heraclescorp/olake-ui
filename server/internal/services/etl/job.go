@@ -574,7 +574,10 @@ func validateStreamsFormat(streamsConfig, available, selected, sourceVersion str
 	if split {
 		selection = selected
 	}
-	return validateCatalogSortOrders(selection)
+	if err := validateCatalogSortOrders(selection); err != nil {
+		return err
+	}
+	return validateCatalogCOW(selection)
 }
 
 func validateCatalogSortOrders(selection string) error {

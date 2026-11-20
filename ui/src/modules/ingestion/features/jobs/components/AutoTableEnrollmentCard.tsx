@@ -1,6 +1,6 @@
 import { Alert, Select, Switch } from "antd"
 
-import { UpsertType } from "@/modules/ingestion/common/types"
+import { MergeStrategy, UpsertType } from "@/modules/ingestion/common/types"
 
 import {
 	DROP_REMOVED_COLUMNS_HELP_TEXT,
@@ -73,6 +73,7 @@ const AutoTableEnrollmentCard = ({
 	onChange,
 }: AutoTableEnrollmentCardProps): JSX.Element => {
 	const controlsDisabled = disabled || !supported
+	const isCOW = draft.defaults.merge_strategy === "copy-on-write"
 	const deleteOptions = UPSERT_TYPE_OPTIONS.map(option => ({
 		value: option.value,
 		label: option.label,
@@ -157,7 +158,7 @@ const AutoTableEnrollmentCard = ({
 					)}
 				</div>
 			)}
-			{draft.enabled && capabilities.error && (
+			{draft.enabled && !isCOW && capabilities.error && (
 				<Alert
 					type="warning"
 					showIcon
@@ -171,14 +172,52 @@ const AutoTableEnrollmentCard = ({
 				already in the job. All columns that exist when a table is added are
 				copied.
 			</p>
+			{draft.enabled && isCOW && !catalog?.supportsCopyOnWrite && (
+				<Alert
+					type="warning"
+					showIcon
+					message="Copy-on-write support is not advertised by the available catalog. Refresh discovery using a supported connector or select merge-on-read."
+				/>
+			)}
 			<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+				<label className="flex flex-col gap-2 text-sm text-gray-700">
+					Merge strategy for new tables
+					<Select<MergeStrategy>
+						aria-label="Merge strategy for new tables"
+						value={draft.defaults.merge_strategy ?? "merge-on-read"}
+						disabled={controlsDisabled}
+						options={[
+							{ value: "merge-on-read", label: "Merge-on-read" },
+							{ value: "copy-on-write", label: "Copy-on-write (index-free)" },
+						]}
+						onChange={merge_strategy =>
+							onChange({
+								...draft,
+								defaults: {
+									...draft.defaults,
+									merge_strategy,
+									...(merge_strategy === "copy-on-write" && {
+										normalization: true,
+										append_mode: false,
+									}),
+								},
+							})
+						}
+					/>
+					<span className="text-xs text-gray-600">
+						Copy-on-write requires PostgreSQL CDC with source TOAST, native
+						Iceberg, normalization and upsert. New tables without a primary key
+						or connector support are skipped; job logs explain why. Existing
+						tables are unchanged.
+					</span>
+				</label>
 				<BooleanSetting
 					label="Normalization for new tables"
 					description="Enabled stores source fields as separate columns. Disabled stores each source row as JSON."
 					value={draft.defaults.normalization}
 					trueLabel="Enabled"
 					falseLabel="Disabled"
-					disabled={controlsDisabled}
+					disabled={controlsDisabled || isCOW}
 					onChange={(normalization): void =>
 						onChange({
 							...draft,
@@ -192,7 +231,7 @@ const AutoTableEnrollmentCard = ({
 					value={draft.defaults.append_mode}
 					trueLabel="Append"
 					falseLabel="Upsert"
-					disabled={controlsDisabled}
+					disabled={controlsDisabled || isCOW}
 					onChange={(append_mode): void =>
 						onChange({
 							...draft,
@@ -206,7 +245,7 @@ const AutoTableEnrollmentCard = ({
 						aria-label="Delete format for new tables"
 						value={draft.defaults.update_type}
 						placeholder="Select a delete format"
-						disabled={controlsDisabled}
+						disabled={controlsDisabled || isCOW}
 						options={deleteOptions}
 						onChange={(update_type): void =>
 							onChange({
@@ -216,8 +255,9 @@ const AutoTableEnrollmentCard = ({
 						}
 					/>
 					<span className="text-xs text-gray-600">
-						Used by Upsert to apply updates and deletes in Iceberg. Choose a
-						format that your query engines support.
+						{isCOW
+							? "Inactive while using copy-on-write; retained for merge-on-read."
+							: "Used by Upsert to apply updates and deletes in Iceberg. Choose a format that your query engines support."}
 					</span>
 				</label>
 				<BooleanSetting

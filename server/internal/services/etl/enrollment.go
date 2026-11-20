@@ -37,6 +37,16 @@ func validateEnrollmentPolicy(settings *dto.AdvancedSettings, sourceType, destin
 	default:
 		return invalid("update_type must explicitly be eq, pos or dv")
 	}
+	strategy := ""
+	if len(defaults.MergeStrategy) != 0 {
+		if err := json.Unmarshal(defaults.MergeStrategy, &strategy); err != nil || (strategy != "merge-on-read" && strategy != "copy-on-write") {
+			return invalid("merge_strategy must be merge-on-read or copy-on-write (omit for merge-on-read)")
+		}
+	}
+	cow := strategy == "copy-on-write"
+	if cow && (!*defaults.Normalization || *defaults.AppendMode) {
+		return invalid("copy-on-write requires normalization and upsert mode")
+	}
 	// This is the connector's query engine/delete-file compatibility matrix.
 	// Empty engine lists are unconstrained. Append-only tables emit no deletes.
 	for _, engine := range settings.TargetQueryEngines {
@@ -57,7 +67,7 @@ func validateEnrollmentPolicy(settings *dto.AdvancedSettings, sourceType, destin
 		default:
 			return invalid(fmt.Sprintf("unknown target query engine %q", engine))
 		}
-		if !*defaults.AppendMode && !strings.Contains(","+supported+",", ","+defaults.UpdateType+",") {
+		if !cow && !*defaults.AppendMode && !strings.Contains(","+supported+",", ","+defaults.UpdateType+",") {
 			return invalid(fmt.Sprintf("update_type %q is not supported by target query engine %q", defaults.UpdateType, engine))
 		}
 	}
@@ -68,7 +78,8 @@ func validateEnrollmentPolicy(settings *dto.AdvancedSettings, sourceType, destin
 	var available struct {
 		Streams []struct {
 			Stream struct {
-				Namespace string `json:"namespace"`
+				SupportsCopyOnWrite bool   `json:"supports_iceberg_copy_on_write"`
+				Namespace           string `json:"namespace"`
 			} `json:"stream"`
 		} `json:"streams"`
 	}
@@ -76,8 +87,13 @@ func validateEnrollmentPolicy(settings *dto.AdvancedSettings, sourceType, destin
 		return invalid("a valid saved available catalog is required")
 	}
 	existing := make(map[string]bool)
+	copyOnWriteAvailable := false
 	for _, entry := range available.Streams {
 		existing[entry.Stream.Namespace] = true
+		copyOnWriteAvailable = copyOnWriteAvailable || entry.Stream.SupportsCopyOnWrite
+	}
+	if cow && !copyOnWriteAvailable {
+		return invalid("copy-on-write capability is not advertised by the available catalog; refresh discovery or select merge-on-read")
 	}
 	approved := make(map[string]bool)
 	for _, schema := range policy.Schemas {

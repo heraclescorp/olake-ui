@@ -306,6 +306,7 @@ const JobSettings: React.FC = () => {
 				draft: enrollmentDraft,
 				supported: enrollmentSupported,
 				capabilities,
+				sourceConfig: job.source.config,
 				catalogRevision,
 				requireRevision:
 					enrollmentDraft.enabled ||

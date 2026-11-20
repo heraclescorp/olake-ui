@@ -12,7 +12,7 @@ import {
 } from "@phosphor-icons/react"
 import { Button, Modal, Tooltip } from "antd"
 import clsx from "clsx"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { DESTINATION_INTERNAL_TYPES } from "@/modules/ingestion/common/constants"
 import {
@@ -21,6 +21,7 @@ import {
 	SyncMode,
 	UpsertType,
 	SortField,
+	MergeStrategy,
 } from "@/modules/ingestion/common/types"
 import { isKafkaSource } from "@/modules/ingestion/common/utils"
 import { BulkConfigureStreamsModalProps } from "@/modules/ingestion/features/jobs/types"
@@ -29,6 +30,7 @@ import { CARD_STYLE, STREAM_DEFAULTS } from "../../constants"
 import {
 	selectAvailableUpdateTypes,
 	useStreamSelectionStore,
+	useJobConfigurationStore,
 } from "../../stores"
 import {
 	buildBulkStreamsData,
@@ -48,6 +50,11 @@ import SyncModeSectionBulk from "../streams/SyncModeSectionBulk"
 import UpsertTypeSectionBulk from "../streams/UpsertTypeSectionBulk"
 import SortOrderEditor from "../streams/SortOrderEditor"
 import { getBulkSortConfiguration } from "../../utils/sortOrder"
+import MergeStrategyEditor from "../streams/MergeStrategyEditor"
+import {
+	copyOnWriteEnabled,
+	getCOWEligibilityError,
+} from "../../utils/copyOnWrite"
 
 type BulkConfigureStep =
 	| "select-streams"
@@ -62,6 +69,7 @@ type BulkConfig = {
 	appendMode: boolean | undefined
 	dedupKeys: string[]
 	upsertType?: UpsertType
+	mergeStrategy?: MergeStrategy
 	normalization: boolean
 	dropRemovedColumns: boolean
 	filter: string
@@ -82,6 +90,7 @@ enum BulkDirtyFieldKey {
 	PartitionRegex = "partitionRegex",
 	UseSourceColumnNames = "useSourceColumnNames",
 	SortOrder = "sortOrder",
+	MergeStrategy = "mergeStrategy",
 }
 
 type BulkDirtyFields = Record<BulkDirtyFieldKey, boolean>
@@ -97,6 +106,7 @@ const INITIAL_DIRTY_FIELDS: BulkDirtyFields = {
 	[BulkDirtyFieldKey.PartitionRegex]: false,
 	[BulkDirtyFieldKey.UseSourceColumnNames]: false,
 	[BulkDirtyFieldKey.SortOrder]: false,
+	[BulkDirtyFieldKey.MergeStrategy]: false,
 }
 
 const INITIAL_BULK_CONFIG: BulkConfig = {
@@ -105,6 +115,7 @@ const INITIAL_BULK_CONFIG: BulkConfig = {
 	appendMode: true,
 	dedupKeys: [],
 	upsertType: undefined,
+	mergeStrategy: undefined,
 	normalization: false,
 	dropRemovedColumns: false,
 	filter: "",
@@ -138,6 +149,10 @@ const BulkConfigureStreamsModal = ({
 	destinationType,
 }: BulkConfigureStreamsModalProps) => {
 	const isKafka = isKafkaSource(sourceType)
+	const source = useJobConfigurationStore(state => state.selectedSource)
+	const destination = useJobConfigurationStore(
+		state => state.selectedDestination,
+	)
 	const availableUpdateTypes = useStreamSelectionStore(
 		selectAvailableUpdateTypes,
 	)
@@ -160,6 +175,10 @@ const BulkConfigureStreamsModal = ({
 	const [bulkSelectedStreams, setBulkSelectedStreams] = useState<
 		StreamIdentifier[]
 	>([])
+	const prepareCOW = useRef(false)
+	const [cowSkipped, setCOWSkipped] = useState<
+		{ name: string; reason: string }[] | null
+	>(null)
 
 	// Local bulk config state
 	const [bulkConfig, setBulkConfig] = useState<BulkConfig>(INITIAL_BULK_CONFIG)
@@ -184,6 +203,57 @@ const BulkConfigureStreamsModal = ({
 	const sortError = dirtyFields[BulkDirtyFieldKey.SortOrder]
 		? bulkSort.error
 		: null
+	const cowRows = bulkSelectedStreams.flatMap(id => {
+		const stream = streamsData?.streams.find(
+			entry =>
+				entry.stream.name === id.streamName &&
+				(entry.stream.namespace ?? "") === id.namespace,
+		)
+		const selected = streamsData?.selected_streams[id.namespace]?.find(
+			entry => entry.stream_name === id.streamName,
+		)
+		if (!stream || !selected) return []
+		return [
+			{
+				stream,
+				selected: {
+					...selected,
+					disabled: false,
+					...(dirtyFields[BulkDirtyFieldKey.AppendMode] && {
+						append_mode: bulkConfig.appendMode,
+					}),
+					...(dirtyFields[BulkDirtyFieldKey.Normalization] && {
+						normalization: bulkConfig.normalization,
+					}),
+					...(dirtyFields[BulkDirtyFieldKey.SyncMode] && {
+						sync_mode: bulkConfig.syncMode,
+					}),
+					...(dirtyFields[BulkDirtyFieldKey.UseSourceColumnNames] && {
+						use_source_column_names: bulkConfig.useSourceColumnNames,
+					}),
+					...(dirtyFields[BulkDirtyFieldKey.MergeStrategy] && {
+						merge_strategy: bulkConfig.mergeStrategy,
+					}),
+				},
+			},
+		]
+	})
+	const cowEligibility = cowRows.map(row => ({
+		...row,
+		error: getCOWEligibilityError({
+			...row,
+			sourceType,
+			destinationType,
+			sourceConfig: source?.config,
+			destinationConfig: destination?.config,
+		}),
+	}))
+	const cowDisabledReason = cowEligibility.find(row => row.error)?.error
+	const bulkCOWError = cowEligibility.find(
+		row => copyOnWriteEnabled(row.selected) && row.error,
+	)?.error
+	const allActiveCOW =
+		cowRows.length > 0 && cowRows.every(row => copyOnWriteEnabled(row.selected))
 
 	const markDirty = (key: BulkDirtyFieldKey) =>
 		setDirtyFields(prev => ({ ...prev, [key]: true }))
@@ -247,6 +317,8 @@ const BulkConfigureStreamsModal = ({
 			setDirtyFields(INITIAL_DIRTY_FIELDS)
 			setIsSyncIngestionCollapsed(true)
 			setIsSelectedStreamsExpanded(false)
+			prepareCOW.current = false
+			setCOWSkipped(null)
 		}
 	}, [open])
 
@@ -280,6 +352,7 @@ const BulkConfigureStreamsModal = ({
 			appendMode: savedWriteSettings.append,
 			dedupKeys: bulkStreamDefaults.dedup_keys ?? [],
 			upsertType: savedWriteSettings.type,
+			mergeStrategy: undefined,
 			normalization:
 				bulkStreamDefaults.normalization ?? STREAM_DEFAULTS.normalization,
 			dropRemovedColumns: false,
@@ -294,6 +367,16 @@ const BulkConfigureStreamsModal = ({
 		setIsSelectedStreamsExpanded(false)
 		setIsSummaryStreamsExpanded(false)
 	}, [selectionKey])
+
+	useEffect(() => {
+		if (step !== "apply-configurations" || !prepareCOW.current) return
+		prepareCOW.current = false
+		setBulkConfig(prev => ({ ...prev, mergeStrategy: "copy-on-write" }))
+		setDirtyFields(prev => ({
+			...prev,
+			[BulkDirtyFieldKey.MergeStrategy]: true,
+		}))
+	}, [step, selectionKey])
 
 	const getStepTitle = () => {
 		if (step === "select-streams") return "Select Streams"
@@ -329,11 +412,57 @@ const BulkConfigureStreamsModal = ({
 		}))
 	}
 
+	const selectEligibleCOW = (): void => {
+		const eligible: StreamIdentifier[] = []
+		const skipped: { name: string; reason: string }[] = []
+		const streams = new Map(
+			streamsData?.streams.map(entry => [
+				JSON.stringify([entry.stream.namespace ?? "", entry.stream.name]),
+				entry,
+			]),
+		)
+		for (const [namespace, entries] of Object.entries(
+			streamsData?.selected_streams ?? {},
+		)) {
+			for (const selected of entries) {
+				if (selected.disabled) continue
+				const stream = streams.get(
+					JSON.stringify([namespace, selected.stream_name]),
+				)
+				const reason = !stream
+					? "Refresh discovery: source table metadata is unavailable."
+					: selected.append_mode
+						? "Append mode does not use upserts."
+						: getCOWEligibilityError({
+								stream,
+								selected,
+								sourceType,
+								destinationType,
+								sourceConfig: source?.config,
+								destinationConfig: destination?.config,
+							})
+				if (reason)
+					skipped.push({
+						name: `${namespace ? `${namespace}.` : ""}${selected.stream_name}`,
+						reason,
+					})
+				else eligible.push({ namespace, streamName: selected.stream_name })
+			}
+		}
+		prepareCOW.current = eligible.length > 0
+		setCOWSkipped(skipped)
+		setBulkSelectedStreams(eligible)
+		if (eligible.length > 0) setStep("apply-configurations")
+	}
+
 	const handleApplyChanges = () => {
 		bulkUpdateStreams(bulkSelectedStreams, {
 			...(dirtyFields[BulkDirtyFieldKey.SyncMode] && {
 				syncMode: bulkConfig.syncMode,
 				cursorField: bulkConfig.cursorField,
+			}),
+			...(dirtyFields[BulkDirtyFieldKey.MergeStrategy] && {
+				mergeStrategy: bulkConfig.mergeStrategy,
 			}),
 			...(dirtyFields[BulkDirtyFieldKey.AppendMode] && {
 				appendMode: bulkConfig.appendMode,
@@ -343,6 +472,7 @@ const BulkConfigureStreamsModal = ({
 					dedupKeys: bulkConfig.dedupKeys,
 				}),
 			...(dirtyFields[BulkDirtyFieldKey.UpsertType] &&
+				!allActiveCOW &&
 				bulkConfig.appendMode !== true && {
 					upsertType: bulkConfig.upsertType,
 				}),
@@ -434,7 +564,9 @@ const BulkConfigureStreamsModal = ({
 								<Button
 									type="primary"
 									onClick={handleApplyChanges}
-									disabled={missingUpsertDedupKeys || !!sortError}
+									disabled={
+										missingUpsertDedupKeys || !!sortError || !!bulkCOWError
+									}
 								>
 									Apply Changes
 								</Button>
@@ -457,7 +589,8 @@ const BulkConfigureStreamsModal = ({
 							bulkSelectedStreams.length === 0 ||
 							!Object.values(dirtyFields).some(Boolean) ||
 							missingUpsertDedupKeys ||
-							!!sortError
+							!!sortError ||
+							!!bulkCOWError
 						}
 					>
 						Review Changes
@@ -519,14 +652,75 @@ const BulkConfigureStreamsModal = ({
 						{getStepTitle()}
 					</div>
 
+					{step !== "select-streams" && cowSkipped && (
+						<div
+							className="border-b border-olake-border px-8 py-2"
+							role="status"
+						>
+							{bulkSelectedStreams.length} eligible; {cowSkipped.length}{" "}
+							skipped. Destination delete files are checked when the job runs.
+							{cowSkipped.length > 0 && (
+								<details>
+									<summary>Skipped tables and reasons</summary>
+									<ul>
+										{cowSkipped.map(row => (
+											<li key={row.name}>
+												{row.name}: {row.reason}
+											</li>
+										))}
+									</ul>
+								</details>
+							)}
+						</div>
+					)}
 					<div className="min-h-0 flex-1">
 						{step === "select-streams" ? (
-							<div className="h-full">
-								<BulkStreamSelectorList
-									streamsData={streamsData}
-									bulkSelectedStreams={bulkSelectedStreams}
-									onChange={setBulkSelectedStreams}
-								/>
+							<div className="flex h-full flex-col">
+								{sourceType?.toLowerCase() === "postgres" &&
+									destinationType?.toLowerCase() === "iceberg" && (
+										<div className="border-b border-neutral-border px-8 py-3">
+											<Button onClick={selectEligibleCOW}>
+												Configure COW for eligible job tables
+											</Button>
+											<p className="mt-2 text-xs text-olake-text-secondary">
+												Only enabled upsert tables are considered. Review before
+												applying; existing live delete files require separate
+												cleanup.
+											</p>
+										</div>
+									)}
+								{cowSkipped && bulkSelectedStreams.length === 0 && (
+									<div
+										className="px-8 py-2"
+										role="status"
+									>
+										No eligible tables. {cowSkipped.length} skipped; see reasons
+										below.
+									</div>
+								)}
+								{cowSkipped && (
+									<details className="px-8">
+										<summary>Skipped tables</summary>
+										<ul>
+											{cowSkipped.map(row => (
+												<li key={row.name}>
+													{row.name}: {row.reason}
+												</li>
+											))}
+										</ul>
+									</details>
+								)}
+								<div className="min-h-0 flex-1">
+									<BulkStreamSelectorList
+										streamsData={streamsData}
+										bulkSelectedStreams={bulkSelectedStreams}
+										onChange={value => {
+											prepareCOW.current = false
+											setCOWSkipped(null)
+											setBulkSelectedStreams(value)
+										}}
+									/>
+								</div>
 							</div>
 						) : step === "summary" ? (
 							<div className="h-full overflow-y-auto px-8 py-5">
@@ -637,16 +831,24 @@ const BulkConfigureStreamsModal = ({
 																onChange={() => {}}
 															/>
 														)}
-													{dirtyFields[BulkDirtyFieldKey.UpsertType] && (
-														<UpsertTypeSectionBulk
-															sourceType={sourceType}
-															sourceVersion={sourceVersion}
-															destinationType={destinationType}
-															bulkAppendMode={bulkConfig.appendMode}
-															bulkUpsertType={bulkConfig.upsertType}
-														/>
-													)}
+													{dirtyFields[BulkDirtyFieldKey.UpsertType] &&
+														!allActiveCOW && (
+															<UpsertTypeSectionBulk
+																sourceType={sourceType}
+																sourceVersion={sourceVersion}
+																destinationType={destinationType}
+																bulkAppendMode={bulkConfig.appendMode}
+																bulkUpsertType={bulkConfig.upsertType}
+															/>
+														)}
 												</div>
+											)}
+											{dirtyFields[BulkDirtyFieldKey.MergeStrategy] && (
+												<MergeStrategyEditor
+													strategy={bulkConfig.mergeStrategy}
+													appendMode={bulkConfig.appendMode}
+													keepExisting
+												/>
 											)}
 											{dirtyFields[BulkDirtyFieldKey.Normalization] && (
 												<NormalizationSectionBulk
@@ -934,31 +1136,43 @@ const BulkConfigureStreamsModal = ({
 																			}}
 																		/>
 																	)}
-																<UpsertTypeSectionBulk
-																	isDirty={
-																		dirtyFields[BulkDirtyFieldKey.UpsertType]
-																	}
-																	sourceType={sourceType}
-																	sourceVersion={sourceVersion}
-																	destinationType={destinationType}
-																	bulkAppendMode={bulkConfig.appendMode}
-																	bulkUpsertType={bulkConfig.upsertType}
-																	onBulkUpsertTypeChange={value => {
-																		setBulkConfigField("upsertType", value)
-																		setDirtyFields(prev => ({
-																			...prev,
-																			[BulkDirtyFieldKey.UpsertType]:
-																				value !== undefined &&
-																				value !== savedWriteSettings.type,
-																			...(value !== undefined && {
-																				[BulkDirtyFieldKey.AppendMode]:
-																					savedWriteSettings.append !== false,
-																			}),
-																		}))
-																		if (value !== undefined)
-																			setBulkConfigField("appendMode", false)
-																	}}
-																/>
+																{!allActiveCOW &&
+																	cowRows.some(row =>
+																		copyOnWriteEnabled(row.selected),
+																	) && (
+																		<p className="text-xs text-olake-text-secondary">
+																			Delete-format changes apply only to
+																			merge-on-read tables. COW tables retain
+																			their saved MOR preference.
+																		</p>
+																	)}
+																{!allActiveCOW && (
+																	<UpsertTypeSectionBulk
+																		isDirty={
+																			dirtyFields[BulkDirtyFieldKey.UpsertType]
+																		}
+																		sourceType={sourceType}
+																		sourceVersion={sourceVersion}
+																		destinationType={destinationType}
+																		bulkAppendMode={bulkConfig.appendMode}
+																		bulkUpsertType={bulkConfig.upsertType}
+																		onBulkUpsertTypeChange={value => {
+																			setBulkConfigField("upsertType", value)
+																			setDirtyFields(prev => ({
+																				...prev,
+																				[BulkDirtyFieldKey.UpsertType]:
+																					value !== undefined &&
+																					value !== savedWriteSettings.type,
+																				...(value !== undefined && {
+																					[BulkDirtyFieldKey.AppendMode]:
+																						savedWriteSettings.append !== false,
+																				}),
+																			}))
+																			if (value !== undefined)
+																				setBulkConfigField("appendMode", false)
+																		}}
+																	/>
+																)}
 															</>
 														)}
 													</div>
@@ -974,6 +1188,31 @@ const BulkConfigureStreamsModal = ({
 															markDirty(BulkDirtyFieldKey.Normalization)
 														}}
 													/>
+													{((sourceType?.toLowerCase() === "postgres" &&
+														destinationType?.toLowerCase() === "iceberg") ||
+														cowRows.some(
+															row =>
+																row.selected.merge_strategy === "copy-on-write",
+														)) && (
+														<MergeStrategyEditor
+															strategy={bulkConfig.mergeStrategy}
+															appendMode={bulkConfig.appendMode}
+															keepExisting
+															dirty={
+																dirtyFields[BulkDirtyFieldKey.MergeStrategy]
+															}
+															disabledReason={cowDisabledReason}
+															error={bulkCOWError}
+															onStrategyChange={strategy => {
+																setBulkConfigField("mergeStrategy", strategy)
+																setDirtyFields(prev => ({
+																	...prev,
+																	[BulkDirtyFieldKey.MergeStrategy]:
+																		strategy !== undefined,
+																}))
+															}}
+														/>
+													)}
 
 													<DropRemovedColumnsSectionBulk
 														isDirty={
