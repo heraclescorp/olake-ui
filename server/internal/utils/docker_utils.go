@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/datazip-inc/olake-ui/server/internal/appconfig"
 	"github.com/datazip-inc/olake-ui/server/internal/constants"
 	"github.com/datazip-inc/olake-ui/server/internal/utils/logger"
@@ -166,20 +167,24 @@ func getECRImageTags(ctx context.Context, fullImageName string) ([]string, error
 	}
 
 	client := ecr.NewFromConfig(cfg)
-	resp, err := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+	pages := ecr.NewDescribeImagesPaginator(client, &ecr.DescribeImagesInput{
 		RepositoryName: aws.String(repoName),
 		RegistryId:     aws.String(accountID),
 		MaxResults:     aws.Int32(100),
+		Filter:         &ecrtypes.DescribeImagesFilter{TagStatus: ecrtypes.TagStatusTagged},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ECR tags: %s", err)
-	}
 
 	var tags []string
-	for i := range resp.ImageDetails {
-		for _, tag := range resp.ImageDetails[i].ImageTags {
-			if isValidTag(tag) {
-				tags = append(tags, tag)
+	for pages.HasMorePages() {
+		resp, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch ECR tags: %w", err)
+		}
+		for i := range resp.ImageDetails {
+			for _, tag := range resp.ImageDetails[i].ImageTags {
+				if isValidTag(tag) {
+					tags = append(tags, tag)
+				}
 			}
 		}
 	}

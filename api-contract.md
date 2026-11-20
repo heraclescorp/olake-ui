@@ -202,7 +202,8 @@ POST, before any operation starts.
 ### Get All Version Of Source 
 - **Endpoint**: `/api/v1/project/:projectid/sources/versions`
 - **Method**: GET
-- **Description**: Give spec based on source type
+- **Description**: List available connector versions for the source type.
+- **ECR discovery**: Lists tagged images across all result pages and applies the existing version filter. Empty pages with a continuation token do not end discovery; a later-page registry error fails the lookup rather than returning partial versions.
 - **Headers**: `Authorization: Bearer <token>`
 - **Request Body**:
   ```json
